@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cto-agent/cto-agent/internal/db"
 	"github.com/cto-agent/cto-agent/internal/llm"
 )
 

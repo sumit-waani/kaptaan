@@ -394,7 +394,7 @@ Dockerfile
 ## 16. Environment Variables
 
 ```env
-TELEGRAM_TOKEN=
+TELEGRAM_BOT_TOKEN=
 DEEPSEEK_API_KEY=
 NIM_API_KEY_1=
 NIM_API_KEY_2=

@@ -66,6 +66,10 @@ func main() {
 		tgBot.Send,
 		tgBot.Ask,
 	)
+	pool.OnAllDown = func() {
+		tgBot.Send("⚠️ All LLM providers are on cooldown. Pausing agent until a provider recovers.")
+		a.Pause(context.Background())
+	}
 	tgBot.SetAgent(a)
 
 	// ── Start ────────────────────────────────────────────────────────────

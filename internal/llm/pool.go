@@ -52,7 +52,8 @@ func (p *provider) resetFailures() {
 type Pool struct {
 	providers []*provider
 	http      *http.Client
-	onUsage   func(UsageRecord) // called after every successful response
+	onUsage   func(UsageRecord)
+	OnAllDown func() // called once when every provider is on cooldown
 }
 
 // Config holds API keys for the pool.
@@ -120,7 +121,9 @@ func (p *Pool) ChatJSON(ctx context.Context, messages []Message) (*Response, err
 func (p *Pool) call(ctx context.Context, messages []Message, tools []Tool, jsonMode bool) (*Response, error) {
 	available := p.availableProviders()
 	if len(available) == 0 {
-		// All on cooldown — find the one coming off cooldown soonest
+		if p.OnAllDown != nil {
+			p.OnAllDown()
+		}
 		soonest := p.soonestAvailable()
 		wait := time.Until(soonest)
 		if wait > 0 {
