@@ -26,11 +26,11 @@ type Agent interface {
 
 // Bot wraps the Telegram bot API and routes messages to the agent.
 type Bot struct {
-	api      *tgbotapi.BotAPI
-	db       *db.DB
-	agent    Agent
-	chatID   int64       // first chat that messages us becomes the founder's chat
-	mu       sync.Mutex
+	api    *tgbotapi.BotAPI
+	db     *db.DB
+	agent  Agent
+	chatID int64 // first chat that messages us becomes the founder's chat
+	mu     sync.Mutex
 
 	// ask() blocks until the founder replies — this channel delivers the reply.
 	pending   chan string
@@ -170,13 +170,21 @@ func (b *Bot) handleUpdate(ctx context.Context, update tgbotapi.Update) {
 		b.handleScan(ctx)
 	case msg.Text == "/usage":
 		b.handleUsage(ctx)
+	case msg.Text == "/tasks":
+		b.handleTasks(ctx)
+	case msg.Text == "/score":
+		b.handleScore(ctx)
+	case msg.Text == "/log":
+		b.handleLog(ctx)
+	case msg.Text == "/clear":
+		b.handleClear(ctx)
 	case strings.HasPrefix(msg.Text, "/replan"):
 		b.Send("🔄 Replan triggered — resuming from replanning state...")
 		go b.agent.Run(ctx)
 	default:
 		// Free-form message while not in ask() — offer help
 		if msg.Text != "" {
-			b.Send("I'm not waiting for input right now.\n\nAvailable commands:\n/status /pause /resume /scan /usage /replan")
+			b.Send("I'm not waiting for input right now.\n\nAvailable commands:\n/status /score /tasks /log /pause /resume /scan /usage /clear /replan")
 		}
 	}
 }
@@ -225,14 +233,18 @@ func (b *Bot) handleHelp() {
 	b.Send(`👋 *Kaptaan — your autonomous CTO agent*
 
 *Commands:*
-/status — show agent state + trust score
-/pause  — pause the agent after current task
+/status — agent state + trust score
+/score  — full trust score breakdown
+/tasks  — current plan + task statuses
+/log    — last 10 task log entries
+/pause  — pause after current task
 /resume — resume the agent
 /scan   — scan the GitHub repo
 /usage  — LLM token usage summary
+/clear  — clear chat history
 /replan — trigger a replan cycle
 
-*To start:* upload your project docs as \`.md\` files.`)
+*To start:* upload your project docs as ` + "`" + `.md` + "`" + ` files.`)
 }
 
 func (b *Bot) handleStatus(ctx context.Context) {
@@ -305,7 +317,121 @@ func (b *Bot) handleUsage(ctx context.Context) {
 	b.Send(sb.String())
 }
 
+func (b *Bot) handleTasks(ctx context.Context) {
+	plan, err := b.db.GetActivePlan(ctx)
+	if err != nil {
+		b.Send("No active plan found.")
+		return
+	}
+	tasks, err := b.db.GetTasksByPlan(ctx, plan.ID)
+	if err != nil {
+		b.Send(fmt.Sprintf("❌ Could not load tasks: %v", err))
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📋 *Plan v%d*\n\n", plan.Version))
+	for _, t := range tasks {
+		if t.ParentID != nil {
+			continue
+		}
+		icon := taskIcon(t.Status)
+		sb.WriteString(fmt.Sprintf("%s *Phase %d* — %s `[%s]`\n", icon, t.Phase, t.Title, t.Status))
+	}
+	b.Send(sb.String())
+}
+
+func (b *Bot) handleScore(ctx context.Context) {
+	proj, err := b.db.GetProject(ctx)
+	if err != nil {
+		b.Send("No project found yet.")
+		return
+	}
+	_ = proj
+	total, answered, _ := b.db.CountClarifications(ctx)
+	clarScore := 0.5
+	if total > 0 {
+		clarScore = float64(answered) / float64(total)
+	}
+	scanned := b.db.KVGetDefault(ctx, "repo_scanned", "0")
+	repoScore := 0.0
+	if scanned == "1" {
+		repoScore = 1.0
+	}
+	chunks, _ := b.db.CountDocChunks(ctx)
+	docScore := float64(chunks) / 20.0
+	if docScore > 1 {
+		docScore = 1
+	}
+	open := total - answered
+	ambig := 1.0 - float64(open)*0.2
+	if ambig < 0 {
+		ambig = 0
+	}
+	total2 := (docScore*0.30 + clarScore*0.25 + repoScore*0.15 + 0.0*0.20 + ambig*0.10) * 100
+
+	bar := func(v float64) string {
+		filled := int(v * 10)
+		if filled > 10 {
+			filled = 10
+		}
+		return strings.Repeat("█", filled) + strings.Repeat("░", 10-filled)
+	}
+	b.Send(fmt.Sprintf(
+		"📊 *Trust Score: %.1f%%*\n\n"+
+			"Doc Coverage   `[%s]` %.0f%%\n"+
+			"Clarifications `[%s]` %.0f%%\n"+
+			"Repo Scan      `[%s]` %.0f%%\n"+
+			"Low Ambiguity  `[%s]` %.0f%%",
+		total2,
+		bar(docScore), docScore*100,
+		bar(clarScore), clarScore*100,
+		bar(repoScore), repoScore*100,
+		bar(ambig), ambig*100,
+	))
+}
+
+func (b *Bot) handleLog(ctx context.Context) {
+	logs, err := b.db.GetGlobalRecentLogs(ctx, 10)
+	if err != nil || len(logs) == 0 {
+		b.Send("No log entries yet.")
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString("📜 *Last 10 events*\n\n")
+	for i := len(logs) - 1; i >= 0; i-- {
+		l := logs[i]
+		sb.WriteString(fmt.Sprintf("`%s` *%s*: %s\n",
+			l.CreatedAt.Format("15:04:05"), l.Event, truncate(l.Payload, 80)))
+	}
+	b.Send(sb.String())
+}
+
+func (b *Bot) handleClear(ctx context.Context) {
+	if err := b.db.ClearMessages(ctx); err != nil {
+		b.Send(fmt.Sprintf("❌ Clear failed: %v", err))
+		return
+	}
+	b.Send("🧹 Chat history cleared.")
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
+
+func taskIcon(status string) string {
+	switch status {
+	case "done":
+		return "✅"
+	case "in_progress":
+		return "🔄"
+	case "failed":
+		return "❌"
+	case "skipped":
+		return "⏭"
+	case "approved":
+		return "👍"
+	default:
+		return "⏳"
+	}
+}
 
 func isCommand(text string) bool {
 	return strings.HasPrefix(text, "/")
