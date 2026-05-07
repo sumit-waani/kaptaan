@@ -165,6 +165,10 @@ func (s *Server) Ask(question string) string {
         s.mu.Unlock()
 
         _ = s.db.KVSet(context.Background(), "pending_ask", question)
+        // Push fresh status so the UI sees ask_active=true and unlocks the
+        // composer immediately — without this users see "Manager is thinking"
+        // and have no way to type their yes/no reply.
+        s.BroadcastStatus(context.Background())
 
         defer func() {
                 s.mu.Lock()
@@ -174,6 +178,7 @@ func (s *Server) Ask(question string) string {
                 s.mu.Unlock()
                 _ = s.db.KVSet(context.Background(), "pending_ask", "")
                 s.hub.broadcast("event: ask_done\ndata: {}\n\n")
+                s.BroadcastStatus(context.Background())
         }()
 
         _ = s.db.AddMessage(context.Background(), "ask", question)
@@ -461,6 +466,14 @@ func (s *Server) buildStatusJSON(ctx context.Context) (string, error) {
                 repoConnected = strings.TrimSpace(proj.RepoURL) != "" && strings.TrimSpace(proj.GithubToken) != ""
         }
 
+        // Surface whether a free-form ask (yes/no question from manager) is
+        // pending. The UI uses this to keep the composer UNLOCKED while the
+        // agent is blocked waiting for a reply — otherwise users would be
+        // told to "pause the agent" just to type "yes".
+        s.mu.Lock()
+        askActive := s.askActive
+        s.mu.Unlock()
+
         out, err := json.Marshal(map[string]interface{}{
                 "project":        name,
                 "state":          state,
@@ -468,6 +481,7 @@ func (s *Server) buildStatusJSON(ctx context.Context) (string, error) {
                 "plan":           planInfo,
                 "agent":          agentIdentity,
                 "repo_connected": repoConnected,
+                "ask_active":     askActive,
         })
         return string(out), err
 }

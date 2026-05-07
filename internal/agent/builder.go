@@ -202,7 +202,7 @@ func (b *Builder) recoverStaleJobs(ctx context.Context) {
 // up a fresh sandbox, runs the agentic build loop, and applies retry policy.
 // The sandbox is always destroyed at the end (success or failure).
 func (b *Builder) processNextJob(ctx context.Context) error {
-        if b.db.KVGetDefault(ctx, "agent_paused", "0") == "1" {
+        if b.db.KVGetDefault(ctx, fmt.Sprintf("agent_paused:%d", b.db.ActiveProjectID(ctx)), "0") == "1" {
                 return nil
         }
 

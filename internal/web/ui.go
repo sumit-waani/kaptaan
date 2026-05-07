@@ -420,7 +420,7 @@ const rawHTML = `<!DOCTYPE html>
 
       <div class="composer" :class="composerLocked() ? 'locked' : ''">
         <template x-if="!composerLocked()">
-          <textarea x-model="input" x-ref="inputEl" rows="1" placeholder="Ask Kaptaan anything…"
+          <textarea x-model="input" x-ref="inputEl" rows="1" :placeholder="composerPlaceholder()"
             @input="autoResize($el)"
             @keydown.enter.prevent="if(!$event.shiftKey && input.trim()) send()"></textarea>
         </template>
@@ -1014,9 +1014,18 @@ function kaptaan() {
     composerLocked() {
       // Lock chat input when the agent is mid-thought, paused, or waiting
       // for a yes/no on a PR (use the PR card buttons instead).
+      // EXCEPTION: if the manager is asking a free-form question (ask_active),
+      // the input must stay open so the user can type their reply — even
+      // though state is technically still "thinking".
       if (this.hasPendingPR()) return true;
+      if (this.status.ask_active) return false;
       const s = (this.status.state || '').toLowerCase();
       return s === 'thinking' || s === 'paused';
+    },
+
+    composerPlaceholder() {
+      if (this.status.ask_active) return 'Type your reply (e.g. yes / no)…';
+      return 'Ask Kaptaan anything…';
     },
 
     lockMessage() {

@@ -523,22 +523,28 @@ Respond with 3-5 short lines covering quality, risks, and readiness.`,
 
 // ── Pause / Resume ──────────────────────────────────────────────────────────
 
+// pauseKey scopes the pause flag per active project so pausing one project
+// no longer freezes every other project's manager + builder.
+func (m *Manager) pauseKey(ctx context.Context) string {
+        return fmt.Sprintf("agent_paused:%d", m.db.ActiveProjectID(ctx))
+}
+
 func (m *Manager) IsPaused(ctx context.Context) bool {
-        return m.db.KVGetDefault(ctx, "agent_paused", "0") == "1"
+        return m.db.KVGetDefault(ctx, m.pauseKey(ctx), "0") == "1"
 }
 
 func (m *Manager) Pause(ctx context.Context) {
-        _ = m.db.KVSet(ctx, "agent_paused", "1")
+        _ = m.db.KVSet(ctx, m.pauseKey(ctx), "1")
         _ = m.db.UpdateProjectStatus(ctx, "paused")
         m.send("⏸ Agent paused.")
-        log.Printf("[manager] paused")
+        log.Printf("[manager] paused (project %d)", m.db.ActiveProjectID(ctx))
 }
 
 func (m *Manager) Resume(ctx context.Context) {
-        _ = m.db.KVSet(ctx, "agent_paused", "0")
+        _ = m.db.KVSet(ctx, m.pauseKey(ctx), "0")
         _ = m.db.UpdateProjectStatus(ctx, "ready")
         m.send("▶️ Agent resumed.")
-        log.Printf("[manager] resumed")
+        log.Printf("[manager] resumed (project %d)", m.db.ActiveProjectID(ctx))
 }
 
 // GetStatus returns a coarse status string for the UI header.
