@@ -214,6 +214,12 @@ func (d *DB) CountDocChunks(ctx context.Context) (int, error) {
         return n, err
 }
 
+// DeleteDoc removes a project doc; chunks are cascade-deleted via FK.
+func (d *DB) DeleteDoc(ctx context.Context, id int) error {
+        _, err := d.pool.Exec(ctx, `DELETE FROM project_docs WHERE id = $1`, id)
+        return err
+}
+
 func (d *DB) ListDocs(ctx context.Context) ([]ProjectDoc, error) {
         rows, err := d.pool.Query(ctx,
                 `SELECT id, filename, created_at FROM project_docs ORDER BY created_at DESC`)

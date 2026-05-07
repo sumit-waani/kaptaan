@@ -11,6 +11,8 @@ import (
         "sync"
         "time"
 
+        "strconv"
+
         "github.com/cto-agent/cto-agent/internal/db"
 )
 
@@ -18,6 +20,7 @@ import (
 type Agent interface {
         RunBuilderLoop(ctx context.Context)
         HandleUserMessage(ctx context.Context, text string)
+        Cancel(ctx context.Context)
         Pause(ctx context.Context)
         Resume(ctx context.Context)
         IngestDoc(ctx context.Context, filename, content string) (int, error)
@@ -72,6 +75,7 @@ type Server struct {
 
         mu              sync.Mutex
         pending         chan string
+        activeAskCancel chan struct{}
         askActive       bool
         pendingQuestion string // in-memory copy of active ask question
         motd            string // shown to each new SSE client on connect
@@ -137,9 +141,11 @@ func (s *Server) SendBuilderStatus(taskTitle, milestone, detail string) {
 // Ask broadcasts a question event and blocks until the browser POSTs a reply.
 
 func (s *Server) Ask(question string) string {
+        cancelCh := make(chan struct{})
         s.mu.Lock()
         s.askActive = true
         s.pendingQuestion = question
+        s.activeAskCancel = cancelCh
         s.mu.Unlock()
 
         _ = s.db.KVSet(context.Background(), "pending_ask", question)
@@ -148,6 +154,7 @@ func (s *Server) Ask(question string) string {
                 s.mu.Lock()
                 s.askActive = false
                 s.pendingQuestion = ""
+                s.activeAskCancel = nil
                 s.mu.Unlock()
                 _ = s.db.KVSet(context.Background(), "pending_ask", "")
                 s.hub.broadcast("event: ask_done\ndata: {}\n\n")
@@ -160,10 +167,25 @@ func (s *Server) Ask(question string) string {
         select {
         case reply := <-s.pending:
                 return reply
+        case <-cancelCh:
+                return ""
         case <-time.After(10 * time.Minute):
                 s.Send("⏰ No reply in 10 min — using best judgment and continuing.")
                 return ""
         }
+}
+
+// CancelAsk unblocks an in-flight Ask() call (returning ""), so a Stop
+// from the user can immediately free the manager goroutine.
+func (s *Server) CancelAsk() {
+        s.mu.Lock()
+        ch := s.activeAskCancel
+        s.mu.Unlock()
+        if ch == nil {
+                return
+        }
+        defer func() { _ = recover() }() // already-closed channel is fine
+        close(ch)
 }
 
 // sseMsg formats a JSON payload as an SSE "msg" event.
@@ -202,10 +224,13 @@ func (s *Server) Start(ctx context.Context) {
         mux.HandleFunc("/api/clear", s.requireAuth(s.handleClear))
         mux.HandleFunc("/api/pause", s.requireAuth(s.handlePause))
         mux.HandleFunc("/api/resume", s.requireAuth(s.handleResume))
+        mux.HandleFunc("/api/cancel", s.requireAuth(s.handleCancel))
         mux.HandleFunc("/api/reply", s.requireAuth(s.handleReply))
         mux.HandleFunc("/api/chat", s.requireAuth(s.handleChat))
         mux.HandleFunc("/api/upload", s.requireAuth(s.handleUpload))
         mux.HandleFunc("/api/docs", s.requireAuth(s.handleDocs))
+        mux.HandleFunc("/api/docs/", s.requireAuth(s.handleDocByID))
+        mux.HandleFunc("/api/builder", s.requireAuth(s.handleBuilder))
 
         srv := &http.Server{
                 Addr:    "0.0.0.0:5000",
@@ -538,6 +563,67 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
                 go s.agent.HandleUserMessage(context.Background(), text)
         }
         jsonOK(w, map[string]string{"ok": "queued"})
+}
+
+func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+                http.Error(w, "POST required", http.StatusMethodNotAllowed)
+                return
+        }
+        if s.agent == nil {
+                jsonErr(w, "agent not configured", http.StatusServiceUnavailable)
+                return
+        }
+        s.agent.Cancel(r.Context())
+        s.CancelAsk()
+        jsonOK(w, map[string]string{"ok": "cancelled"})
+}
+
+func (s *Server) handleBuilder(w http.ResponseWriter, r *http.Request) {
+        jobs, err := s.db.ListRecentBuilderJobs(r.Context(), 12)
+        if err != nil {
+                jsonErr(w, err.Error(), http.StatusInternalServerError)
+                return
+        }
+        type item struct {
+                ID        int    `json:"id"`
+                TaskTitle string `json:"task_title"`
+                Status    string `json:"status"`
+                Branch    string `json:"branch"`
+                PRURL     string `json:"pr_url"`
+                Updated   string `json:"updated"`
+        }
+        out := []item{}
+        for _, j := range jobs {
+                out = append(out, item{
+                        ID:        j.ID,
+                        TaskTitle: j.TaskTitle,
+                        Status:    j.Status,
+                        Branch:    j.Branch,
+                        PRURL:     j.PRURL,
+                        Updated:   j.UpdatedAt.Format("2006-01-02 15:04"),
+                })
+        }
+        jsonOK(w, map[string]interface{}{"jobs": out})
+}
+
+func (s *Server) handleDocByID(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodDelete {
+                http.Error(w, "DELETE required", http.StatusMethodNotAllowed)
+                return
+        }
+        idStr := strings.TrimPrefix(r.URL.Path, "/api/docs/")
+        idStr = strings.TrimSuffix(idStr, "/")
+        id, err := strconv.Atoi(idStr)
+        if err != nil || id <= 0 {
+                jsonErr(w, "invalid id", http.StatusBadRequest)
+                return
+        }
+        if err := s.db.DeleteDoc(r.Context(), id); err != nil {
+                jsonErr(w, err.Error(), http.StatusInternalServerError)
+                return
+        }
+        jsonOK(w, map[string]string{"ok": "deleted"})
 }
 
 func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {

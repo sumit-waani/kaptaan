@@ -95,6 +95,7 @@ func main() {
 
         go webServer.Start(ctx)
         go a.RunBuilderLoop(ctx)
+        go a.ResumePendingReviews(ctx)
 
         <-ctx.Done()
         log.Println("👋 shutting down gracefully")

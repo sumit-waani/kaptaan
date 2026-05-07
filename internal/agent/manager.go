@@ -37,16 +37,17 @@ Rules:
 // It does NOT run a background loop — every action is triggered by a user
 // message routed through HandleUserMessage.
 type Manager struct {
-        db           *db.DB
-        llm          *llm.Pool
-        exec         *tools.Executor
-        send         func(string)
-        ask          func(string) string
-        sendPRReview func(jobID int, taskTitle, prURL, note, diff string)
-        builder      *Builder
+        db            *db.DB
+        llm           *llm.Pool
+        exec          *tools.Executor
+        send          func(string)
+        ask           func(string) string
+        sendPRReview  func(jobID int, taskTitle, prURL, note, diff string)
+        notifyBuilder func()
 
-        mu   sync.Mutex
-        busy bool
+        mu       sync.Mutex
+        busy     bool
+        cancelFn context.CancelFunc
 }
 
 type managerPlanPhase struct {
@@ -93,16 +94,21 @@ func (m *Manager) HandleUserMessage(ctx context.Context, userText string) {
         m.mu.Lock()
         if m.busy {
                 m.mu.Unlock()
-                m.send("⏳ Still working on your last message — give me a moment.")
+                m.send("⏳ Still working on your last message — hit Stop in the header if you want me to drop it.")
                 return
         }
+        runCtx, cancel := context.WithCancel(ctx)
         m.busy = true
+        m.cancelFn = cancel
         m.mu.Unlock()
         defer func() {
                 m.mu.Lock()
                 m.busy = false
+                m.cancelFn = nil
                 m.mu.Unlock()
+                cancel()
         }()
+        ctx = runCtx
 
         docCtx, err := BuildDocContext(ctx, m.db, "", 12)
         if err != nil {
@@ -127,8 +133,16 @@ USER MESSAGE:
         }
 
         for round := 0; round < 4; round++ {
+                if ctx.Err() != nil {
+                        m.send("⏹ Stopped.")
+                        return
+                }
                 resp, err := m.llm.ChatJSON(ctx, msgs)
                 if err != nil {
+                        if ctx.Err() != nil {
+                                m.send("⏹ Stopped.")
+                                return
+                        }
                         m.send("⚠️ LLM error: " + err.Error())
                         return
                 }
@@ -163,8 +177,23 @@ USER MESSAGE:
                                 llm.Message{Role: "user", Content: "ANSWER: " + answer},
                         )
                 case "plan":
-                        m.persistPlanAndQueue(ctx, d.Summary, d.Phases)
-                        return
+                        // Plan preview — give the user a chance to approve or steer
+                        // before we persist tasks and burn builder tokens.
+                        preview := formatPlanPreview(d.Summary, d.Phases)
+                        answer := m.ask(preview + "\n\nReply **go** to queue this plan, or tell me what to change.")
+                        if isYes(answer) || strings.EqualFold(strings.TrimSpace(answer), "go") {
+                                m.persistPlanAndQueue(ctx, d.Summary, d.Phases)
+                                return
+                        }
+                        if strings.TrimSpace(answer) == "" {
+                                m.send("⌛ No reply — plan discarded. Send me a new message when ready.")
+                                return
+                        }
+                        // Treat the reply as refinement guidance and re-plan.
+                        msgs = append(msgs,
+                                llm.Message{Role: "assistant", Content: raw},
+                                llm.Message{Role: "user", Content: "PLAN FEEDBACK: " + answer},
+                        )
                 default:
                         if d.Text != "" {
                                 m.send(d.Text)
@@ -225,8 +254,38 @@ func (m *Manager) persistPlanAndQueue(ctx context.Context, summary string, phase
         sb.WriteString(fmt.Sprintf("\n%d task(s) queued for the builder.", queued))
         m.send(sb.String())
 
-        if m.builder != nil {
-                m.builder.Notify()
+        if m.notifyBuilder != nil {
+                m.notifyBuilder()
+        }
+}
+
+// formatPlanPreview renders the proposed plan as markdown for user approval.
+func formatPlanPreview(summary string, phases []managerPlanPhase) string {
+        var sb strings.Builder
+        sb.WriteString("📋 **Proposed plan**")
+        if strings.TrimSpace(summary) != "" {
+                sb.WriteString(" — ")
+                sb.WriteString(summary)
+        }
+        sb.WriteString("\n\n")
+        for _, p := range phases {
+                sb.WriteString(fmt.Sprintf("**Phase %d — %s**\n", p.Number, p.Title))
+                for _, t := range p.Tasks {
+                        sb.WriteString("  • ")
+                        sb.WriteString(t.Title)
+                        sb.WriteString("\n")
+                }
+        }
+        return sb.String()
+}
+
+// Cancel aborts the current HandleUserMessage run, if any.
+func (m *Manager) Cancel() {
+        m.mu.Lock()
+        cancel := m.cancelFn
+        m.mu.Unlock()
+        if cancel != nil {
+                cancel()
         }
 }
 
@@ -285,6 +344,7 @@ func (m *Manager) ReviewBuilderJob(ctx context.Context, job *db.BuilderJob) {
                         m.send(fmt.Sprintf("❌ Merge failed: %s", result.Output))
                         return
                 }
+                _ = m.db.UpdateBuilderJobStatus(ctx, job.ID, "merged")
                 _ = m.db.UpdateTaskStatus(ctx, job.TaskID, "done")
                 _ = m.db.LogEvent(ctx, job.TaskID, "merged", job.PRURL)
                 m.send(fmt.Sprintf("✅ Merged: %s", job.PRURL))

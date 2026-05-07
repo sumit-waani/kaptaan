@@ -319,7 +319,7 @@ Relevant docs:
 
         _ = b.db.UpdateTaskPR(ctx, task.ID, runtime.prURL)
         _ = b.db.UpdateTaskStatus(ctx, task.ID, "done")
-        if err := b.db.UpdateBuilderJob(ctx, job.ID, "done", runtime.prURL, runtime.prNumber, runtime.diffSummary, runtime.testOutput, runtime.buildOutput); err != nil {
+        if err := b.db.UpdateBuilderJob(ctx, job.ID, "awaiting_review", runtime.prURL, runtime.prNumber, runtime.diffSummary, runtime.testOutput, runtime.buildOutput); err != nil {
                 return err
         }
         _ = b.db.LogEvent(ctx, task.ID, "pr_ready", fmt.Sprintf("pr=%s", runtime.prURL))

@@ -6,7 +6,7 @@ import "strings"
 var indexHTML string
 
 func init() {
-	indexHTML = strings.ReplaceAll(rawHTML, "BTICK", "`")
+        indexHTML = strings.ReplaceAll(rawHTML, "BTICK", "`")
 }
 
 const rawHTML = `<!DOCTYPE html>
@@ -46,20 +46,18 @@ const rawHTML = `<!DOCTYPE html>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; overflow: hidden; }
     body {
-      font-family: var(--sans);
-      background: var(--bg);
-      color: var(--text);
-      font-size: 15px;
-      line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-      overscroll-behavior: none;
+      font-family: var(--sans); background: var(--bg); color: var(--text);
+      font-size: 15px; line-height: 1.5;
+      -webkit-font-smoothing: antialiased; overscroll-behavior: none;
     }
     button { font-family: inherit; font-size: inherit; cursor: pointer; border: none; background: none; color: inherit; }
     input, textarea { font-family: inherit; font-size: inherit; color: inherit; background: none; border: none; outline: none; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
 
     [x-cloak] { display: none !important; }
 
-    /* ─── Auth screens ─────────────────────────────────────────────── */
+    /* ─── Auth ─────────────────────────────────────────────────────── */
     .auth-loading-wrap, .auth-wrap {
       min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center;
       padding: 24px; padding-top: calc(var(--safe-top) + 24px);
@@ -87,8 +85,7 @@ const rawHTML = `<!DOCTYPE html>
     .app-header {
       flex-shrink: 0;
       padding: calc(var(--safe-top) + 10px) 14px 10px;
-      background: var(--bg);
-      border-bottom: 1px solid var(--line);
+      background: var(--bg); border-bottom: 1px solid var(--line);
       display: flex; align-items: center; gap: 10px;
     }
     .brand { font-weight: 700; font-size: 16px; letter-spacing: -0.2px; }
@@ -104,18 +101,17 @@ const rawHTML = `<!DOCTYPE html>
     .state-pill.ready    { background: rgba(34,197,94,0.12);  color: var(--ok); }
 
     .nav-tabs { display: flex; gap: 2px; margin-left: auto; background: var(--bg1); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
-    .nav-tab {
-      padding: 6px 12px; border-radius: 6px; font-size: 13px; font-weight: 500; color: var(--text2);
-    }
+    .nav-tab { padding: 6px 12px; border-radius: 6px; font-size: 13px; font-weight: 500; color: var(--text2); }
     .nav-tab.active { background: var(--bg2); color: var(--text); }
 
-    .pause-btn {
+    .hdr-btn {
       padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 500;
       background: var(--bg1); border: 1px solid var(--line2); color: var(--text);
     }
-    .pause-btn.paused { background: var(--warn); border-color: var(--warn); color: #000; }
+    .hdr-btn.paused { background: var(--warn); border-color: var(--warn); color: #000; }
+    .hdr-btn.stop { background: var(--err); border-color: var(--err); color: #fff; }
 
-    /* ─── Chat view ──────────────────────────────────────────────── */
+    /* ─── Chat ───────────────────────────────────────────────────── */
     .chat-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
     .messages {
       flex: 1; overflow-y: auto; padding: 12px 12px 6px;
@@ -161,14 +157,16 @@ const rawHTML = `<!DOCTYPE html>
     .send-btn:disabled { background: var(--line2); cursor: not-allowed; }
     .send-btn svg { width: 18px; height: 18px; }
 
-    /* ─── Settings view ────────────────────────────────────────── */
+    /* ─── Settings ───────────────────────────────────────────────── */
     .settings-view { flex: 1; overflow-y: auto; padding: 16px 14px calc(var(--safe-bottom) + 24px); }
     .settings-section { margin-bottom: 22px; }
     .settings-section h2 { font-size: 13px; font-family: var(--mono); letter-spacing: 1.5px; color: var(--text3); text-transform: uppercase; margin-bottom: 8px; }
     .settings-card { background: var(--bg1); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
-    .settings-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+    .settings-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
     .settings-row:last-child { border-bottom: none; }
     .settings-row .meta { font-family: var(--mono); font-size: 11px; color: var(--text3); }
+    .settings-row .row-main { flex: 1; min-width: 0; }
+    .settings-row .row-main .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .settings-action {
       padding: 9px 14px; border-radius: 8px; background: var(--bg2); border: 1px solid var(--line2);
       font-size: 13px; font-weight: 500;
@@ -176,6 +174,8 @@ const rawHTML = `<!DOCTYPE html>
     .settings-action.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
     .settings-action.danger  { color: var(--err); border-color: rgba(239,68,68,0.3); }
     .settings-action:disabled { opacity: 0.5; cursor: not-allowed; }
+    .icon-btn { padding: 4px 8px; border-radius: 6px; color: var(--text3); font-size: 16px; line-height: 1; }
+    .icon-btn:hover { color: var(--err); background: var(--bg2); }
     .empty { color: var(--text3); font-size: 13px; text-align: center; padding: 16px; }
     pre.console {
       background: var(--bg); padding: 12px; border-radius: 8px; font-family: var(--mono); font-size: 11.5px;
@@ -183,6 +183,28 @@ const rawHTML = `<!DOCTYPE html>
       border: 1px solid var(--line);
     }
     .desc { color: var(--text2); font-size: 13px; margin-bottom: 10px; }
+
+    .job-status {
+      font-family: var(--mono); font-size: 10px; padding: 2px 6px; border-radius: 4px;
+      background: var(--bg2); color: var(--text2); letter-spacing: 0.5px; text-transform: uppercase;
+    }
+    .job-status.queued          { background: rgba(160,160,160,0.15); color: var(--text2); }
+    .job-status.running         { background: rgba(59,130,246,0.18); color: var(--accent); }
+    .job-status.awaiting_review { background: rgba(245,158,11,0.18); color: var(--warn); }
+    .job-status.merged          { background: rgba(34,197,94,0.18);  color: var(--ok); }
+    .job-status.failed          { background: rgba(239,68,68,0.18);  color: var(--err); }
+    .job-status.rejected        { background: rgba(239,68,68,0.12);  color: var(--err); }
+
+    /* ─── Mobile ─────────────────────────────────────────────────── */
+    @media (max-width: 600px) {
+      .composer textarea { max-height: 80px; }
+      .nav-tab { padding: 5px 10px; font-size: 12px; }
+      .brand { font-size: 14px; }
+      .state-pill { display: none; }
+      .messages { padding: 10px 8px 4px; }
+      .bubble { max-width: 88%; font-size: 14px; }
+      .settings-view { padding: 12px 10px calc(var(--safe-bottom) + 18px); }
+    }
   </style>
 </head>
 <body x-data="kaptaan()" x-init="init()" x-cloak>
@@ -231,7 +253,9 @@ const rawHTML = `<!DOCTYPE html>
         <button class="nav-tab" :class="view==='settings'?'active':''" @click="view='settings'; loadSettings()">Settings</button>
       </div>
 
-      <button class="pause-btn" :class="status.state==='paused'?'paused':''"
+      <button x-show="status.state==='thinking'" class="hdr-btn stop" @click="cancel()">Stop</button>
+      <button x-show="status.state!=='thinking'" class="hdr-btn"
+        :class="status.state==='paused'?'paused':''"
         @click="togglePause()"
         x-text="status.state==='paused'?'Resume':'Pause'"></button>
     </header>
@@ -255,7 +279,7 @@ const rawHTML = `<!DOCTYPE html>
               </div>
             </template>
             <template x-if="m.type!=='separator' && m.ts">
-              <div :class="'ts ' + (isUser(m) ? '' : '')" x-text="m.ts"></div>
+              <div class="ts" x-text="m.ts"></div>
             </template>
           </div>
         </template>
@@ -297,8 +321,39 @@ const rawHTML = `<!DOCTYPE html>
           </template>
           <template x-for="d in docs" :key="d.id">
             <div class="settings-row">
-              <span x-text="d.filename"></span>
-              <span class="meta" x-text="d.uploaded"></span>
+              <div class="row-main">
+                <div class="name" x-text="d.filename"></div>
+                <div class="meta" x-text="d.uploaded"></div>
+              </div>
+              <button class="icon-btn" :title="'Delete ' + d.filename" @click="deleteDoc(d)">×</button>
+            </div>
+          </template>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2>Builder activity</h2>
+        <div class="settings-card">
+          <div style="display:flex; gap:8px; margin-bottom:10px;">
+            <button class="settings-action" @click="loadBuilder()">Refresh</button>
+          </div>
+          <template x-if="jobs.length===0">
+            <div class="empty">No builder jobs yet.</div>
+          </template>
+          <template x-for="j in jobs" :key="j.id">
+            <div class="settings-row">
+              <div class="row-main">
+                <div class="name" x-text="j.task_title || ('Job #' + j.id)"></div>
+                <div class="meta">
+                  <span x-text="j.branch || '(no branch)'"></span>
+                  <span> · </span>
+                  <span x-text="j.updated"></span>
+                  <template x-if="j.pr_url">
+                    <span> · <a :href="j.pr_url" target="_blank" rel="noopener">PR</a></span>
+                  </template>
+                </div>
+              </div>
+              <span :class="'job-status ' + j.status" x-text="(j.status||'').replace('_',' ')"></span>
             </div>
           </template>
         </div>
@@ -351,13 +406,12 @@ function kaptaan() {
     connected: false,
     _es:       null,
 
-    // Settings state
     docs:      [],
+    jobs:      [],
     logsText:  '',
     usageText: '',
     uploading: false,
 
-    // ── Lifecycle ──────────────────────────────────────────────
     async init() {
       try {
         const r = await fetch('/api/auth/status');
@@ -368,12 +422,9 @@ function kaptaan() {
         } else {
           this.screen = d.hasUser ? 'login' : 'setup';
         }
-      } catch {
-        this.screen = 'login';
-      }
+      } catch { this.screen = 'login'; }
     },
 
-    // ── Auth ───────────────────────────────────────────────────
     async submitAuth() {
       this.authErr = ''; this.authBusy = true;
       const url = this.screen === 'setup' ? '/api/auth/setup' : '/api/auth/login';
@@ -395,12 +446,11 @@ function kaptaan() {
     async logout() {
       await fetch('/api/auth/logout', { method: 'POST' });
       if (this._es) { this._es.close(); this._es = null; }
-      this.messages = []; this.docs = []; this.connected = false;
+      this.messages = []; this.docs = []; this.jobs = []; this.connected = false;
       this.input = ''; this.authUser = ''; this.authPass = '';
       this.view = 'chat'; this.screen = 'login';
     },
 
-    // ── SSE ────────────────────────────────────────────────────
     connectSSE() {
       if (this._es) this._es.close();
       const es = new EventSource('/events');
@@ -413,7 +463,7 @@ function kaptaan() {
       es.addEventListener('msg', e => {
         try {
           const m = JSON.parse(e.data);
-          if (m.type === 'builder_status') return;     // not shown in simplified UI
+          if (m.type === 'builder_status') return;
           if (m.type === 'pr_review') {
             const text = '**PR ready:** ' + (m.pr_url || '(local)') +
               '\n\n' + (m.manager_note || '') +
@@ -436,35 +486,30 @@ function kaptaan() {
       };
     },
 
-    // ── Helpers ───────────────────────────────────────────────
     push(m) {
       this.messages.push(m);
       this.$nextTick(() => this.scrollBottom());
     },
-
     scrollBottom() {
       const el = document.getElementById('feed-end');
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'end' });
     },
-
     isUser(m) { return m.type === 'reply'; },
     bubbleClass(m) {
       if (m.type === 'reply')   return 'user';
       if (m.type === 'ask')     return 'ask';
-      if (m.type === 'message') return 'agent';
       return 'agent';
     },
     renderMsg(text) {
       if (!text) return '';
       return DOMPurify.sanitize(marked.parse(text));
     },
-
     autoResize(el) {
       el.style.height = 'auto';
-      el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+      const cap = window.innerWidth <= 600 ? 80 : 120;
+      el.style.height = Math.min(el.scrollHeight, cap) + 'px';
     },
 
-    // ── Send chat message ────────────────────────────────────
     async send() {
       const text = this.input.trim();
       if (!text) return;
@@ -477,17 +522,17 @@ function kaptaan() {
       if (r.status === 401) { this.screen = 'login'; }
     },
 
-    // ── Pause / Resume ────────────────────────────────────────
     async togglePause() {
       const url = this.status.state === 'paused' ? '/api/resume' : '/api/pause';
       await fetch(url, { method: 'POST' });
     },
 
-    // ── Settings actions ──────────────────────────────────────
+    async cancel() {
+      await fetch('/api/cancel', { method: 'POST' });
+    },
+
     async loadSettings() {
-      this.loadDocs();
-      this.loadLogs();
-      this.loadUsage();
+      this.loadDocs(); this.loadBuilder(); this.loadLogs(); this.loadUsage();
     },
 
     async loadDocs() {
@@ -496,6 +541,15 @@ function kaptaan() {
         if (!r.ok) return;
         const d = await r.json();
         this.docs = d.docs || [];
+      } catch {}
+    },
+
+    async loadBuilder() {
+      try {
+        const r = await fetch('/api/builder');
+        if (!r.ok) return;
+        const d = await r.json();
+        this.jobs = d.jobs || [];
       } catch {}
     },
 
@@ -533,6 +587,12 @@ function kaptaan() {
         if (r.status === 401) { this.screen = 'login'; return; }
         await this.loadDocs();
       } finally { this.uploading = false; }
+    },
+
+    async deleteDoc(doc) {
+      if (!confirm('Delete ' + doc.filename + '?')) return;
+      const r = await fetch('/api/docs/' + doc.id, { method: 'DELETE' });
+      if (r.ok) { await this.loadDocs(); }
     },
 
     async clearChat() {
