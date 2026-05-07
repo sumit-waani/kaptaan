@@ -325,6 +325,39 @@ func (d *DB) GetTasksByPlan(ctx context.Context, planID int) ([]Task, error) {
         return scanTasks(rows)
 }
 
+// GetNextTaskToQueue returns the next top-level task in the plan that is
+// approved but does not yet have a builder_jobs row. Used to enforce
+// sequential, one-PR-at-a-time execution: only after the previous task is
+// merged on GitHub do we hand the next task to the Builder.
+func (d *DB) GetNextTaskToQueue(ctx context.Context, planID int) (*Task, error) {
+        row := d.pool.QueryRow(ctx,
+                `SELECT t.id,t.plan_id,t.parent_id,t.phase,t.title,t.description,t.status,
+                        t.is_suggestion,t.pr_url,t.created_at,t.updated_at
+                 FROM tasks t
+                 WHERE t.plan_id=$1
+                   AND t.parent_id IS NULL
+                   AND t.status='approved'
+                   AND NOT EXISTS (SELECT 1 FROM builder_jobs bj WHERE bj.task_id = t.id)
+                 ORDER BY t.phase, t.id
+                 LIMIT 1`, planID)
+        return scanTask(row)
+}
+
+// GetLatestJobForTask returns the most recent builder job for a task, or
+// nil (no error) if none exists yet.
+func (d *DB) GetLatestJobForTask(ctx context.Context, taskID int) (*BuilderJob, error) {
+        row := d.pool.QueryRow(ctx, `
+        SELECT id, project_id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+            started_at, finished_at, created_at, updated_at
+        FROM builder_jobs WHERE task_id=$1
+        ORDER BY id DESC LIMIT 1`, taskID)
+        j, err := scanBuilderJob(row)
+        if err != nil {
+                return nil, nil
+        }
+        return j, nil
+}
+
 func (d *DB) GetNextPendingTask(ctx context.Context, planID int) (*Task, error) {
         row := d.pool.QueryRow(ctx,
                 `SELECT id,plan_id,parent_id,phase,title,description,status,is_suggestion,pr_url,created_at,updated_at

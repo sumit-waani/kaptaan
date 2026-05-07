@@ -130,6 +130,25 @@ func (m *Manager) HandleUserMessage(ctx context.Context, userText string) {
                 return
         }
 
+        // Hard gate: refuse to do any planning or task-spawning work unless
+        // the active project has a GitHub repo + token configured. The
+        // Builder cannot clone or open PRs without these, so generating a
+        // plan would just queue tasks that fail.
+        proj, err := m.db.GetActiveProject(ctx)
+        if err != nil || proj == nil {
+                m.send("⚠️ No active project. Open **Settings → Projects** and create one before sending instructions.")
+                return
+        }
+        if strings.TrimSpace(proj.RepoURL) == "" || strings.TrimSpace(proj.GithubToken) == "" {
+                m.send("🔌 **Repo not connected for `" + proj.Name + "`.**\n\n" +
+                        "Open **Settings → Projects → Edit** and set:\n\n" +
+                        "• GitHub repo (`owner/name`)\n" +
+                        "• GitHub token (with `repo` scope)\n\n" +
+                        "I can't plan or build until the repo is wired up.")
+                m.trace(ctx, "rejected_no_repo", proj.Name)
+                return
+        }
+
         runCtx, cancel, ok := m.tryStartRun(ctx)
         if !ok {
                 m.trace(ctx, "rejected_busy", "another HandleUserMessage already running")
@@ -289,7 +308,14 @@ func (m *Manager) persistPlanAndQueue(ctx context.Context, summary string, phase
                 sb.WriteString("📋 **Plan ready**\n\n")
         }
 
-        queued := 0
+        // Persist every task (top-level + subtasks) so the user can see the
+        // full plan tree in the Builder tab. But only enqueue ONE builder
+        // job — for the very first top-level task — so phases execute
+        // strictly sequentially: the next task is queued only after the
+        // previous PR is merged in ReviewBuilderJob.
+        firstTaskID := 0
+        firstTaskTitle := ""
+        totalTasks := 0
         for _, phase := range phases {
                 sb.WriteString(fmt.Sprintf("**Phase %d — %s**\n", phase.Number, phase.Title))
                 for _, t := range phase.Tasks {
@@ -303,19 +329,54 @@ func (m *Manager) persistPlanAndQueue(ctx context.Context, summary string, phase
                                         _ = m.db.UpdateTaskStatus(ctx, sub.ID, "pending")
                                 }
                         }
-                        branch := fmt.Sprintf("feature/task-%d-%s", dbTask.ID, slugify(t.Title))
-                        if _, err := m.db.CreateBuilderJob(ctx, dbTask.ID, branch); err == nil {
-                                queued++
+                        if firstTaskID == 0 {
+                                firstTaskID = dbTask.ID
+                                firstTaskTitle = t.Title
                         }
+                        totalTasks++
                         sb.WriteString("  • ")
                         sb.WriteString(t.Title)
                         sb.WriteString("\n")
                 }
         }
 
-        sb.WriteString(fmt.Sprintf("\n%d task(s) queued for the builder.", queued))
+        if firstTaskID > 0 {
+                branch := fmt.Sprintf("feature/task-%d-%s", firstTaskID, slugify(firstTaskTitle))
+                if _, err := m.db.CreateBuilderJob(ctx, firstTaskID, branch); err != nil {
+                        m.send("⚠️ Could not queue first builder job: " + err.Error())
+                }
+                sb.WriteString(fmt.Sprintf("\n%d task(s) saved. Builder will run them one at a time — starting with **%s**. Next task gets queued only after the previous PR is merged.", totalTasks, firstTaskTitle))
+        } else {
+                sb.WriteString("\n⚠️ No tasks were created — plan was empty.")
+        }
         m.send(sb.String())
 
+        if m.notifyBuilder != nil {
+                m.notifyBuilder()
+        }
+}
+
+// enqueueNextTaskAfterMerge picks the next approved-but-unqueued task in the
+// active plan (lowest phase, lowest id) and creates a builder job for it.
+// Called after a PR is successfully merged. Returns the new job, or nil if
+// the plan is exhausted.
+func (m *Manager) enqueueNextTaskAfterMerge(ctx context.Context) {
+        plan, err := m.db.GetActivePlan(ctx)
+        if err != nil || plan == nil {
+                return
+        }
+        next, err := m.db.GetNextTaskToQueue(ctx, plan.ID)
+        if err != nil || next == nil {
+                _ = m.db.ExhaustPlan(ctx, plan.ID)
+                m.send("🎉 All planned tasks merged. Plan complete.")
+                return
+        }
+        branch := fmt.Sprintf("feature/task-%d-%s", next.ID, slugify(next.Title))
+        if _, err := m.db.CreateBuilderJob(ctx, next.ID, branch); err != nil {
+                m.send("⚠️ Could not queue next task: " + err.Error())
+                return
+        }
+        m.send(fmt.Sprintf("➡️ Next task queued: **%s** (phase %d)", next.Title, next.Phase))
         if m.notifyBuilder != nil {
                 m.notifyBuilder()
         }
@@ -410,6 +471,10 @@ func (m *Manager) ReviewBuilderJob(ctx context.Context, job *db.BuilderJob) {
                 _ = m.db.UpdateTaskStatus(ctx, job.TaskID, "done")
                 _ = m.db.LogEvent(ctx, job.TaskID, "merged", job.PRURL)
                 m.send(fmt.Sprintf("✅ Merged: %s", job.PRURL))
+                // Sequential phase execution: now that this PR is merged we
+                // are safe from merge conflicts, so enqueue the NEXT task in
+                // the plan (and only that one — Builder will pick it up).
+                m.enqueueNextTaskAfterMerge(ctx)
                 return
         }
 

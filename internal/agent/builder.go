@@ -7,6 +7,7 @@ import (
         "regexp"
         "strconv"
         "strings"
+        "sync"
         "time"
 
         "github.com/cto-agent/cto-agent/internal/db"
@@ -66,6 +67,12 @@ type Builder struct {
         onJobDone         onJobDoneFn
 
         notify chan struct{}
+
+        // Tracks the in-flight job so a global Stop can abort it (cancel
+        // the LLM/tool loop and let the deferred sandbox cleanup run).
+        curMu     sync.Mutex
+        curJobID  int
+        curCancel context.CancelFunc
 }
 
 // SetNotifyState wires a callback the builder calls whenever queue/running
@@ -110,6 +117,27 @@ func (b *Builder) Notify() {
         case b.notify <- struct{}{}:
         default:
         }
+}
+
+// Cancel aborts the in-flight builder job (if any). The deferred sandbox
+// cleanup runs as a side effect and the job is marked failed.
+func (b *Builder) Cancel() {
+        b.curMu.Lock()
+        cancel := b.curCancel
+        jobID := b.curJobID
+        b.curMu.Unlock()
+        if cancel == nil {
+                return
+        }
+        log.Printf("[builder] cancel requested for job %d", jobID)
+        cancel()
+}
+
+// IsBusy reports whether a job is in flight right now.
+func (b *Builder) IsBusy() bool {
+        b.curMu.Lock()
+        defer b.curMu.Unlock()
+        return b.curJobID != 0
 }
 
 // status emits a builder milestone: persists it to task_log, pushes it to
@@ -198,6 +226,35 @@ func (b *Builder) processNextJob(ctx context.Context) error {
         b.send(fmt.Sprintf("🔧 Builder started: %s", task.Title))
         b.emitState()
         defer b.emitState()
+
+        // Wrap ctx so a global Stop can cancel just this job (the parent
+        // builder loop keeps running). The deferred cleanup() below will
+        // tear down the sandbox; on cancel we mark the job as failed so
+        // it doesn't sit in "running" forever. We capture parentCtx BEFORE
+        // shadowing ctx so the defer can distinguish a user-initiated job
+        // cancel from a full builder-loop shutdown.
+        parentCtx := ctx
+        runCtx, runCancel := context.WithCancel(parentCtx)
+        b.curMu.Lock()
+        b.curJobID = job.ID
+        b.curCancel = runCancel
+        b.curMu.Unlock()
+        defer func() {
+                runCancel()
+                b.curMu.Lock()
+                b.curJobID = 0
+                b.curCancel = nil
+                b.curMu.Unlock()
+                if runCtx.Err() != nil && parentCtx.Err() == nil {
+                        // parentCtx still alive but runCtx was cancelled — i.e.
+                        // user pressed Stop on this specific job.
+                        _ = b.db.UpdateBuilderJobStatus(context.Background(), job.ID, "failed")
+                        _ = b.db.UpdateTaskStatus(context.Background(), job.TaskID, "failed")
+                        _ = b.db.LogEvent(context.Background(), task.ID, "builder_stopped", "stopped by user")
+                        b.send(fmt.Sprintf("⏹ Builder stopped on user request: %s", task.Title))
+                }
+        }()
+        ctx = runCtx
 
         exec, cleanup, err := b.spawnJobExecutor(ctx, task)
         if err != nil {

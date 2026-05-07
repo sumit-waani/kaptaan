@@ -217,14 +217,18 @@ type builderStateMilestone struct {
 }
 
 type builderStateRunning struct {
-        JobID      int                     `json:"job_id"`
-        TaskID     int                     `json:"task_id"`
-        TaskTitle  string                  `json:"task_title"`
-        TaskDesc   string                  `json:"task_desc"`
-        Branch     string                  `json:"branch"`
-        StartedAt  string                  `json:"started_at"`
-        Subtasks   []builderStateSubtask   `json:"subtasks"`
-        Milestones []builderStateMilestone `json:"milestones"`
+        JobID       int                     `json:"job_id"`
+        TaskID      int                     `json:"task_id"`
+        TaskTitle   string                  `json:"task_title"`
+        TaskDesc    string                  `json:"task_desc"`
+        Branch      string                  `json:"branch"`
+        StartedAt   string                  `json:"started_at"`
+        RetryCount  int                     `json:"retry_count"`
+        MaxRetries  int                     `json:"max_retries"`
+        BuildOutput string                  `json:"build_output"`
+        TestOutput  string                  `json:"test_output"`
+        Subtasks    []builderStateSubtask   `json:"subtasks"`
+        Milestones  []builderStateMilestone `json:"milestones"`
 }
 
 type builderStateSubtask struct {
@@ -238,12 +242,26 @@ type builderStateQueueItem struct {
         TaskID    int    `json:"task_id"`
         TaskTitle string `json:"task_title"`
         Branch    string `json:"branch"`
+        Status    string `json:"status,omitempty"`
+        PRURL     string `json:"pr_url,omitempty"`
+}
+
+type builderStateFailed struct {
+        JobID       int    `json:"job_id"`
+        TaskID      int    `json:"task_id"`
+        TaskTitle   string `json:"task_title"`
+        Branch      string `json:"branch"`
+        BuildOutput string `json:"build_output"`
+        TestOutput  string `json:"test_output"`
+        RetryCount  int    `json:"retry_count"`
+        FailedAt    string `json:"failed_at"`
 }
 
 type builderStatePayload struct {
         Running *builderStateRunning    `json:"running"`
         Queue   []builderStateQueueItem `json:"queue"`
         Recent  []builderStateQueueItem `json:"recent"`
+        Failed  *builderStateFailed     `json:"failed,omitempty"`
         Updated string                  `json:"updated"`
 }
 
@@ -279,12 +297,16 @@ func (s *Server) buildBuilderStateJSON(ctx context.Context) (string, error) {
                         startedAt = running.StartedAt.Format("15:04:05")
                 }
                 r := &builderStateRunning{
-                        JobID:     running.ID,
-                        TaskID:    running.TaskID,
-                        TaskTitle: title,
-                        TaskDesc:  desc,
-                        Branch:    running.Branch,
-                        StartedAt: startedAt,
+                        JobID:       running.ID,
+                        TaskID:      running.TaskID,
+                        TaskTitle:   title,
+                        TaskDesc:    desc,
+                        Branch:      running.Branch,
+                        StartedAt:   startedAt,
+                        RetryCount:  running.RetryCount,
+                        MaxRetries:  3, // matches maxJobRetries+1 in builder.go
+                        BuildOutput: trunc(running.BuildOutput, 4000),
+                        TestOutput:  trunc(running.TestOutput, 4000),
                 }
                 if subs, err := s.db.GetSubtasks(ctx, running.TaskID); err == nil {
                         for _, st := range subs {
@@ -320,8 +342,29 @@ func (s *Server) buildBuilderStateJSON(ctx context.Context) (string, error) {
                                 continue
                         }
                         out.Recent = append(out.Recent, builderStateQueueItem{
-                                JobID: j.ID, TaskID: j.TaskID, TaskTitle: j.TaskTitle, Branch: j.Branch,
+                                JobID: j.ID, TaskID: j.TaskID, TaskTitle: j.TaskTitle,
+                                Branch: j.Branch, Status: j.Status, PRURL: j.PRURL,
                         })
+                        // Surface the most recent failure (if any) with its full
+                        // build/test output so the user can see WHY it failed.
+                        if out.Failed == nil && j.Status == "failed" {
+                                if fj, err := s.db.GetBuilderJob(ctx, j.ID); err == nil && fj != nil {
+                                        finishedAt := ""
+                                        if fj.FinishedAt != nil {
+                                                finishedAt = fj.FinishedAt.Format("15:04:05")
+                                        }
+                                        out.Failed = &builderStateFailed{
+                                                JobID:       fj.ID,
+                                                TaskID:      fj.TaskID,
+                                                TaskTitle:   j.TaskTitle,
+                                                Branch:      fj.Branch,
+                                                BuildOutput: trunc(fj.BuildOutput, 4000),
+                                                TestOutput:  trunc(fj.TestOutput, 4000),
+                                                RetryCount:  fj.RetryCount,
+                                                FailedAt:    finishedAt,
+                                        }
+                                }
+                        }
                 }
         }
 
@@ -334,3 +377,118 @@ func (s *Server) buildBuilderStateJSON(ctx context.Context) (string, error) {
 
 // suppress unused import warning if pgx is later removed
 var _ = pgx.ErrNoRows
+
+// ─── Plan tree (Phase → Task → Job) ─────────────────────────────────────────
+
+type planTreeJob struct {
+        JobID      int    `json:"job_id"`
+        Status     string `json:"status"`
+        Branch     string `json:"branch"`
+        PRURL      string `json:"pr_url"`
+        RetryCount int    `json:"retry_count"`
+}
+
+type planTreeTask struct {
+        ID          int            `json:"id"`
+        Title       string         `json:"title"`
+        Description string         `json:"description"`
+        Status      string         `json:"status"`
+        PRURL       string         `json:"pr_url"`
+        Subtasks    []planTreeTask `json:"subtasks"`
+        Job         *planTreeJob   `json:"job,omitempty"`
+}
+
+type planTreePhase struct {
+        Number int            `json:"number"`
+        Tasks  []planTreeTask `json:"tasks"`
+}
+
+type planTreePayload struct {
+        Plan          *planTreeMeta   `json:"plan"`
+        Phases        []planTreePhase `json:"phases"`
+        Empty         bool            `json:"empty"`
+        RepoConnected bool            `json:"repo_connected"`
+}
+
+type planTreeMeta struct {
+        ID      int    `json:"id"`
+        Version int    `json:"version"`
+        Status  string `json:"status"`
+}
+
+func (s *Server) handlePlanTree(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet {
+                http.Error(w, "GET required", http.StatusMethodNotAllowed)
+                return
+        }
+        ctx := r.Context()
+        out := planTreePayload{Empty: true}
+
+        if proj, err := s.db.GetProject(ctx); err == nil && proj != nil {
+                out.RepoConnected = strings.TrimSpace(proj.RepoURL) != "" && strings.TrimSpace(proj.GithubToken) != ""
+        }
+
+        plan, err := s.db.GetActivePlan(ctx)
+        if err != nil || plan == nil {
+                jsonOK(w, out)
+                return
+        }
+        out.Plan = &planTreeMeta{ID: plan.ID, Version: plan.Version, Status: plan.Status}
+        out.Empty = false
+
+        tasks, err := s.db.GetTasksByPlan(ctx, plan.ID)
+        if err != nil {
+                jsonErr(w, err.Error(), http.StatusInternalServerError)
+                return
+        }
+
+        // Index by phase, separating top-level from subtasks.
+        phaseMap := map[int]*planTreePhase{}
+        topByID := map[int]*planTreeTask{}
+        var phaseOrder []int
+        for _, t := range tasks {
+                if t.ParentID != nil {
+                        continue
+                }
+                p, ok := phaseMap[t.Phase]
+                if !ok {
+                        p = &planTreePhase{Number: t.Phase}
+                        phaseMap[t.Phase] = p
+                        phaseOrder = append(phaseOrder, t.Phase)
+                }
+                pt := planTreeTask{
+                        ID: t.ID, Title: t.Title, Description: t.Description,
+                        Status: t.Status, PRURL: t.PRURL,
+                }
+                if job, err := s.db.GetLatestJobForTask(ctx, t.ID); err == nil && job != nil {
+                        pt.Job = &planTreeJob{
+                                JobID: job.ID, Status: job.Status, Branch: job.Branch,
+                                PRURL: job.PRURL, RetryCount: job.RetryCount,
+                        }
+                }
+                p.Tasks = append(p.Tasks, pt)
+                topByID[t.ID] = &p.Tasks[len(p.Tasks)-1]
+        }
+        // Attach subtasks.
+        for _, t := range tasks {
+                if t.ParentID == nil {
+                        continue
+                }
+                parent, ok := topByID[*t.ParentID]
+                if !ok {
+                        continue
+                }
+                parent.Subtasks = append(parent.Subtasks, planTreeTask{
+                        ID: t.ID, Title: t.Title, Description: t.Description,
+                        Status: t.Status, PRURL: t.PRURL,
+                })
+        }
+        // Stable phase order (sorted numerically, but phaseOrder already
+        // captured insert order which equals tasks' order which already came
+        // back ordered by phase, id from the SQL).
+        for _, n := range phaseOrder {
+                out.Phases = append(out.Phases, *phaseMap[n])
+        }
+
+        jsonOK(w, out)
+}

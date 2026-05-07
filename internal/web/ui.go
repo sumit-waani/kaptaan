@@ -99,6 +99,103 @@ const rawHTML = `<!DOCTYPE html>
     .state-pill.thinking { background: rgba(59,130,246,0.15); color: var(--accent); }
     .state-pill.paused   { background: rgba(245,158,11,0.15); color: var(--warn); }
     .state-pill.ready    { background: rgba(34,197,94,0.12);  color: var(--ok); }
+    .agent-pill {
+      font-family: var(--mono); font-size: 10px; letter-spacing: 1px;
+      padding: 3px 7px; border-radius: 4px; text-transform: uppercase;
+      background: var(--bg2); color: var(--text2); margin-left: 4px;
+    }
+    .agent-pill.manager { background: rgba(139,92,246,0.15); color: #a78bfa; }
+    .agent-pill.builder { background: rgba(59,130,246,0.15); color: var(--accent); }
+    .agent-pill.ready   { background: rgba(34,197,94,0.12);  color: var(--ok); }
+    .agent-pill.paused  { background: rgba(245,158,11,0.15); color: var(--warn); }
+    .agent-pill.idle    { display: none; }
+
+    /* Repo-not-connected banner */
+    .repo-banner {
+      flex-shrink: 0; padding: 8px 14px; background: rgba(245,158,11,0.12);
+      border-bottom: 1px solid rgba(245,158,11,0.3); color: var(--warn);
+      font-size: 13px; display: flex; align-items: center; gap: 8px;
+    }
+    .repo-banner button {
+      margin-left: auto; padding: 4px 10px; border-radius: 6px;
+      background: var(--warn); color: #000; font-size: 12px; font-weight: 600;
+    }
+
+    /* PR Approval card */
+    .pr-card {
+      background: var(--bg1); border: 1px solid var(--accent); border-radius: 12px;
+      padding: 14px; margin: 6px 0;
+    }
+    .pr-card-head {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+      font-family: var(--mono); font-size: 11px; letter-spacing: 1.5px;
+      color: var(--accent); text-transform: uppercase;
+    }
+    .pr-card-title { font-weight: 600; font-size: 15px; margin-bottom: 6px; color: var(--text); }
+    .pr-card-meta { font-family: var(--mono); font-size: 11px; color: var(--text3); margin-bottom: 10px; }
+    .pr-card-note { font-size: 13.5px; color: var(--text2); margin-bottom: 12px; line-height: 1.45; }
+    .pr-card-actions { display: flex; gap: 8px; }
+    .pr-btn { padding: 9px 18px; border-radius: 8px; font-size: 13px; font-weight: 600; }
+    .pr-btn.approve { background: var(--ok); color: #000; }
+    .pr-btn.reject  { background: transparent; color: var(--err); border: 1px solid var(--err); }
+    .pr-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Plan tree (Phase → Task → Job) */
+    .phase-block { margin-bottom: 14px; }
+    .phase-head {
+      font-family: var(--mono); font-size: 11px; letter-spacing: 1.5px;
+      color: var(--text3); text-transform: uppercase; margin-bottom: 6px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .phase-head .ln { flex: 1; height: 1px; background: var(--line); }
+    .task-row {
+      padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+      margin-bottom: 6px; background: var(--bg1);
+    }
+    .task-row.active   { border-color: var(--accent); background: rgba(59,130,246,0.06); }
+    .task-row.done     { opacity: 0.7; }
+    .task-row .top { display: flex; gap: 8px; align-items: center; }
+    .task-row .title { font-weight: 600; flex: 1; }
+    .task-row .desc { color: var(--text2); font-size: 13px; margin-top: 4px; }
+    .task-row .links { font-family: var(--mono); font-size: 11px; color: var(--text3); margin-top: 6px; }
+    .subtask-row { padding: 5px 10px; border-left: 2px solid var(--line2); margin: 4px 0 4px 12px; font-size: 13px; color: var(--text2); display: flex; gap: 8px; align-items: center; }
+
+    /* Milestone timeline */
+    .timeline { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+    .timeline-row {
+      display: flex; gap: 10px; align-items: flex-start; padding: 4px 0;
+      font-size: 13px;
+    }
+    .timeline-row .t-time {
+      font-family: var(--mono); font-size: 10px; color: var(--text3);
+      flex-shrink: 0; padding-top: 2px; min-width: 56px;
+    }
+    .timeline-row .t-evt {
+      font-family: var(--mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
+      background: var(--bg2); color: var(--text2); flex-shrink: 0; text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .timeline-row .t-msg { color: var(--text); word-break: break-word; }
+    .timeline-row .t-evt.builder_start, .timeline-row .t-evt.task_complete { background: rgba(34,197,94,0.18); color: var(--ok); }
+    .timeline-row .t-evt.sandbox_error, .timeline-row .t-evt.build_failed, .timeline-row .t-evt.test_failed { background: rgba(239,68,68,0.18); color: var(--err); }
+
+    /* Failure / retry */
+    .retry-pill {
+      font-family: var(--mono); font-size: 10px; padding: 2px 7px; border-radius: 4px;
+      background: rgba(245,158,11,0.18); color: var(--warn); letter-spacing: 0.5px;
+    }
+    .failure-card {
+      border: 1px solid rgba(239,68,68,0.4); border-radius: 10px; padding: 12px;
+      background: rgba(239,68,68,0.04); margin-top: 6px;
+    }
+    .failure-head { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+    .failure-head .chev { color: var(--text3); font-family: var(--mono); }
+
+    .composer.locked textarea { opacity: 0.55; }
+    .composer .lock-msg {
+      flex: 1; font-family: var(--mono); font-size: 11.5px; color: var(--text3);
+      padding: 10px 12px; border: 1px dashed var(--line2); border-radius: 18px; text-align: center;
+    }
 
     .nav-tabs { display: flex; gap: 2px; margin-left: auto; background: var(--bg1); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
     .nav-tab { padding: 6px 12px; border-radius: 6px; font-size: 13px; font-weight: 500; color: var(--text2); }
@@ -247,19 +344,26 @@ const rawHTML = `<!DOCTYPE html>
       <div class="conn-dot" :class="connected?'live':''"></div>
       <div class="brand">Kaptaan</div>
       <span class="state-pill" :class="(status.state||'').toLowerCase()" x-text="status.state||'ready'"></span>
+      <span class="agent-pill" :class="(status.agent||'idle').toLowerCase()" x-text="status.agent||''"></span>
 
       <div class="nav-tabs">
         <button class="nav-tab" :class="view==='chat'?'active':''" @click="view='chat'">Chat</button>
-        <button class="nav-tab" :class="view==='builder'?'active':''" @click="view='builder'; loadBuilderState()">Builder</button>
+        <button class="nav-tab" :class="view==='builder'?'active':''" @click="view='builder'; loadBuilderState(); loadPlanTree()">Builder</button>
         <button class="nav-tab" :class="view==='settings'?'active':''" @click="view='settings'; loadSettings()">Settings</button>
       </div>
 
-      <button x-show="status.state==='thinking'" class="hdr-btn stop" @click="cancel()">Stop</button>
-      <button x-show="status.state!=='thinking'" class="hdr-btn"
+      <button x-show="canStop()" class="hdr-btn stop" @click="cancel()">Stop</button>
+      <button x-show="!canStop()" class="hdr-btn"
         :class="status.state==='paused'?'paused':''"
         @click="togglePause()"
         x-text="status.state==='paused'?'Resume':'Pause'"></button>
     </header>
+
+    <!-- Repo-not-connected banner -->
+    <div x-show="status.project && status.repo_connected===false" class="repo-banner">
+      <span>⚠️ No GitHub repo connected — planning is disabled. Connect a repo + token in Settings to begin.</span>
+      <button @click="view='settings'; loadSettings()">Open Settings</button>
+    </div>
 
     <!-- Chat view -->
     <main x-show="view==='chat'" class="chat-view">
@@ -274,12 +378,39 @@ const rawHTML = `<!DOCTYPE html>
             <template x-if="m.type==='separator'">
               <div class="bubble system" x-text="m.text"></div>
             </template>
-            <template x-if="m.type!=='separator'">
+            <template x-if="m.type==='pr_review'">
+              <div class="pr-card">
+                <div class="pr-card-head">
+                  <span>📋 Pull Request — Review needed</span>
+                </div>
+                <div class="pr-card-title" x-text="m.task_title || 'Builder finished a task'"></div>
+                <div class="pr-card-meta">
+                  <template x-if="m.pr_url">
+                    <span><a :href="m.pr_url" target="_blank" rel="noopener" x-text="m.pr_url"></a></span>
+                  </template>
+                  <template x-if="!m.pr_url"><span>(local diff)</span></template>
+                  <template x-if="m.branch"><span> · <span x-text="m.branch"></span></span></template>
+                </div>
+                <template x-if="m.diff_summary">
+                  <pre class="console" style="max-height:200px; margin-bottom:10px;" x-text="m.diff_summary"></pre>
+                </template>
+                <template x-if="m.manager_note">
+                  <div class="pr-card-note" x-html="renderMsg(m.manager_note)"></div>
+                </template>
+                <div class="pr-card-actions" x-show="!m.resolved">
+                  <button class="pr-btn approve" :disabled="askBusy" @click="answerPR(m, 'yes')">✓ Approve & Merge</button>
+                  <button class="pr-btn reject"  :disabled="askBusy" @click="answerPR(m, 'no')">✕ Reject</button>
+                </div>
+                <div x-show="m.resolved" style="font-family: var(--mono); font-size:11px; color: var(--text3); margin-top: 8px;"
+                  x-text="'➜ Replied: ' + (m.resolved||'')"></div>
+              </div>
+            </template>
+            <template x-if="m.type!=='separator' && m.type!=='pr_review'">
               <div :class="'msg-row ' + (isUser(m) ? 'from-user' : '')">
                 <div :class="'bubble ' + bubbleClass(m)" x-html="renderMsg(m.text)"></div>
               </div>
             </template>
-            <template x-if="m.type!=='separator' && m.ts">
+            <template x-if="m.type!=='separator' && m.type!=='pr_review' && m.ts">
               <div class="ts" x-text="m.ts"></div>
             </template>
           </div>
@@ -287,11 +418,16 @@ const rawHTML = `<!DOCTYPE html>
         <div id="feed-end"></div>
       </div>
 
-      <div class="composer">
-        <textarea x-model="input" x-ref="inputEl" rows="1" placeholder="Ask Kaptaan anything…"
-          @input="autoResize($el)"
-          @keydown.enter.prevent="if(!$event.shiftKey && input.trim()) send()"></textarea>
-        <button class="send-btn" :disabled="!input.trim()" @click="send()" aria-label="Send">
+      <div class="composer" :class="composerLocked() ? 'locked' : ''">
+        <template x-if="!composerLocked()">
+          <textarea x-model="input" x-ref="inputEl" rows="1" placeholder="Ask Kaptaan anything…"
+            @input="autoResize($el)"
+            @keydown.enter.prevent="if(!$event.shiftKey && input.trim()) send()"></textarea>
+        </template>
+        <template x-if="composerLocked()">
+          <div class="lock-msg" x-text="lockMessage()"></div>
+        </template>
+        <button class="send-btn" :disabled="!input.trim() || composerLocked()" @click="send()" aria-label="Send">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
             stroke-linecap="round" stroke-linejoin="round">
             <line x1="22" y1="2" x2="11" y2="13"/>
@@ -305,6 +441,67 @@ const rawHTML = `<!DOCTYPE html>
     <main x-show="view==='builder'" class="settings-view">
 
       <section class="settings-section">
+        <h2>Plan
+          <span style="font-family: var(--sans); font-weight: 400; color: var(--text3); text-transform: none; letter-spacing: 0; font-size: 11px; margin-left: 6px;">
+            (Phase → Task → Job — sequential, one PR at a time)
+          </span>
+        </h2>
+        <div class="settings-card">
+          <template x-if="planTree.empty">
+            <div class="empty">No plan yet. Send a message in Chat to have the Manager draft one.</div>
+          </template>
+          <template x-if="!planTree.empty">
+            <div>
+              <div class="meta" style="font-family: var(--mono); font-size:11px; color: var(--text3); margin-bottom: 10px;"
+                   x-show="planTree.plan">
+                <span x-text="'Plan v' + (planTree.plan ? planTree.plan.version : '?')"></span>
+                <span> · </span>
+                <span x-text="(planTree.plan && planTree.plan.status) || ''"></span>
+                <button class="settings-action" style="margin-left:10px; padding:3px 9px;" @click="loadPlanTree()">Refresh</button>
+              </div>
+              <template x-for="ph in (planTree.phases || [])" :key="ph.number">
+                <div class="phase-block">
+                  <div class="phase-head">
+                    <span x-text="'Phase ' + ph.number"></span>
+                    <span class="ln"></span>
+                  </div>
+                  <template x-for="t in ph.tasks" :key="t.id">
+                    <div :class="'task-row ' + (t.status==='in_progress'?'active':'') + ' ' + (t.status==='done'?'done':'')">
+                      <div class="top">
+                        <div class="title" x-text="t.title"></div>
+                        <span :class="'job-status ' + t.status" x-text="(t.status||'').replace('_',' ')"></span>
+                        <template x-if="t.job && t.job.retry_count > 0">
+                          <span class="retry-pill" x-text="'Attempt ' + (t.job.retry_count + 1) + '/3'"></span>
+                        </template>
+                      </div>
+                      <template x-if="t.description">
+                        <div class="desc" x-text="t.description"></div>
+                      </template>
+                      <div class="links" x-show="t.pr_url || (t.job && (t.job.branch || t.job.pr_url))">
+                        <template x-if="t.job && t.job.branch">
+                          <span x-text="'branch ' + t.job.branch"></span>
+                        </template>
+                        <template x-if="(t.job && t.job.pr_url) || t.pr_url">
+                          <span> · <a :href="(t.job && t.job.pr_url) || t.pr_url" target="_blank" rel="noopener">PR</a></span>
+                        </template>
+                      </div>
+                      <template x-for="st in (t.subtasks || [])" :key="st.id">
+                        <div class="subtask-row">
+                          <span style="flex:1;" x-text="st.title"></span>
+                          <span :class="'job-status ' + st.status" x-text="(st.status||'').replace('_',' ')"></span>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </section>
+
+
+      <section class="settings-section">
         <h2>Running task
           <span style="font-family: var(--sans); font-weight: 400; color: var(--text3); text-transform: none; letter-spacing: 0; font-size: 11px; margin-left: 6px;">
             (live — auto-updates as the Builder works)
@@ -316,9 +513,14 @@ const rawHTML = `<!DOCTYPE html>
           </template>
           <template x-if="builderState.running">
             <div>
-              <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px; flex-wrap:wrap;">
                 <div style="font-weight:600; font-size:15px;" x-text="builderState.running.task_title"></div>
-                <span class="job-status running">running</span>
+                <div style="display:flex; gap:6px; align-items:center;">
+                  <template x-if="builderState.running.retry_count > 0">
+                    <span class="retry-pill" x-text="'Attempt ' + (builderState.running.retry_count + 1) + '/' + (builderState.running.max_retries || 3)"></span>
+                  </template>
+                  <span class="job-status running">running</span>
+                </div>
               </div>
               <div class="meta" style="font-family: var(--mono); font-size:11px; color: var(--text3); margin-bottom: 10px;">
                 <span x-text="'job #' + builderState.running.job_id"></span>
@@ -347,14 +549,58 @@ const rawHTML = `<!DOCTYPE html>
               <div style="margin-top:12px;">
                 <div style="font-family: var(--mono); font-size:11px; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom:6px;">Milestones</div>
                 <template x-if="!builderState.running.milestones || !builderState.running.milestones.length">
-                  <div class="empty">No milestones yet.</div>
+                  <div class="empty">No milestones yet — sandbox warming up.</div>
                 </template>
-                <pre class="console" style="max-height: 280px;" x-show="builderState.running.milestones && builderState.running.milestones.length"
-                  x-text="builderState.running.milestones.map(m => '[' + m.time + '] ' + m.event + ' — ' + m.payload).join('\n')"></pre>
+                <div class="timeline" x-show="builderState.running.milestones && builderState.running.milestones.length">
+                  <template x-for="m in (builderState.running.milestones || [])" :key="m.time + m.event">
+                    <div class="timeline-row">
+                      <div class="t-time" x-text="m.time"></div>
+                      <div :class="'t-evt ' + m.event" x-text="(m.event || '').replace(/_/g,' ')"></div>
+                      <div class="t-msg" x-text="m.payload"></div>
+                    </div>
+                  </template>
+                </div>
               </div>
             </div>
           </template>
         </div>
+      </section>
+
+      <!-- Most recent failure (expandable) -->
+      <section class="settings-section" x-show="builderState.failed">
+        <h2>Last failure</h2>
+        <template x-if="builderState.failed">
+          <div class="failure-card">
+            <div class="failure-head" @click="failureOpen = !failureOpen">
+              <span class="chev" x-text="failureOpen ? '▼' : '▶'"></span>
+              <div style="flex:1;">
+                <div style="font-weight:600;" x-text="builderState.failed.task_title"></div>
+                <div class="meta" style="font-family: var(--mono); font-size:11px; color: var(--text3);">
+                  job #<span x-text="builderState.failed.job_id"></span>
+                  <span> · attempt </span><span x-text="(builderState.failed.retry_count || 0) + 1"></span>
+                  <template x-if="builderState.failed.failed_at">
+                    <span> · failed <span x-text="builderState.failed.failed_at"></span></span>
+                  </template>
+                </div>
+              </div>
+              <span class="job-status failed">failed</span>
+            </div>
+            <div x-show="failureOpen" style="margin-top:10px;">
+              <template x-if="builderState.failed.build_output">
+                <div style="margin-top:8px;">
+                  <div style="font-family: var(--mono); font-size:10px; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom:4px;">Build output</div>
+                  <pre class="console" x-text="builderState.failed.build_output"></pre>
+                </div>
+              </template>
+              <template x-if="builderState.failed.test_output">
+                <div style="margin-top:8px;">
+                  <div style="font-family: var(--mono); font-size:10px; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom:4px;">Test output</div>
+                  <pre class="console" x-text="builderState.failed.test_output"></pre>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
       </section>
 
       <section class="settings-section">
@@ -478,69 +724,70 @@ const rawHTML = `<!DOCTYPE html>
         </div>
       </section>
 
+      <!-- Diagnostics — de-emphasized, collapsed by default. The Builder
+           tab is the primary surface for live activity. -->
       <section class="settings-section">
-        <h2>Builder activity</h2>
-        <div class="settings-card">
-          <div style="display:flex; gap:8px; margin-bottom:10px;">
-            <button class="settings-action" @click="loadBuilder()">Refresh</button>
-          </div>
-          <template x-if="jobs.length===0">
-            <div class="empty">No builder jobs yet.</div>
-          </template>
-          <template x-for="j in jobs" :key="j.id">
-            <div class="settings-row">
-              <div class="row-main">
-                <div class="name" x-text="j.task_title || ('Job #' + j.id)"></div>
-                <div class="meta">
-                  <span x-text="j.branch || '(no branch)'"></span>
-                  <span> · </span>
-                  <span x-text="j.updated"></span>
-                  <template x-if="j.pr_url">
-                    <span> · <a :href="j.pr_url" target="_blank" rel="noopener">PR</a></span>
-                  </template>
-                </div>
-              </div>
-              <span :class="'job-status ' + j.status" x-text="(j.status||'').replace('_',' ')"></span>
-            </div>
-          </template>
-        </div>
-      </section>
-
-      <section class="settings-section">
-        <h2>Agent trace
+        <h2 @click="showLogs = !showLogs" style="cursor:pointer; user-select:none;">
+          <span x-text="showLogs ? '▼' : '▶'" style="display:inline-block; width:14px; color: var(--text3);"></span>
+          Diagnostics
           <span style="font-family: var(--sans); font-weight: 400; color: var(--text3); text-transform: none; letter-spacing: 0; font-size: 11px; margin-left: 6px;">
-            (every internal step the manager takes)
+            (raw logs, traces, LLM usage — the Builder tab is the main view)
           </span>
         </h2>
-        <div class="settings-card">
-          <div style="display:flex; gap:8px; margin-bottom:10px; align-items: center;"
-               x-effect="traceAutoEffect">
-            <button class="settings-action" @click="loadTrace()">Refresh</button>
-            <label style="font-size:12px; color: var(--text2); display:flex; gap:6px; align-items:center; cursor:pointer;">
-              <input type="checkbox" x-model="traceAuto" style="margin:0;"/> Auto-refresh
-            </label>
+        <div x-show="showLogs">
+          <div class="settings-card" style="margin-bottom: 10px;">
+            <div style="font-family: var(--mono); font-size:10px; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom:8px;">Builder activity (raw)</div>
+            <div style="display:flex; gap:8px; margin-bottom:10px;">
+              <button class="settings-action" @click="loadBuilder()">Refresh</button>
+            </div>
+            <template x-if="jobs.length===0">
+              <div class="empty">No builder jobs yet.</div>
+            </template>
+            <template x-for="j in jobs" :key="j.id">
+              <div class="settings-row">
+                <div class="row-main">
+                  <div class="name" x-text="j.task_title || ('Job #' + j.id)"></div>
+                  <div class="meta">
+                    <span x-text="j.branch || '(no branch)'"></span>
+                    <span> · </span>
+                    <span x-text="j.updated"></span>
+                    <template x-if="j.pr_url">
+                      <span> · <a :href="j.pr_url" target="_blank" rel="noopener">PR</a></span>
+                    </template>
+                  </div>
+                </div>
+                <span :class="'job-status ' + j.status" x-text="(j.status||'').replace('_',' ')"></span>
+              </div>
+            </template>
           </div>
-          <pre class="console" style="max-height: 320px;" x-text="traceText || 'No trace entries yet — send a chat message to populate.'"></pre>
-        </div>
-      </section>
 
-      <section class="settings-section">
-        <h2>Task log</h2>
-        <div class="settings-card">
-          <div style="display:flex; gap:8px; margin-bottom:10px;">
-            <button class="settings-action" @click="loadLogs()">Refresh</button>
+          <div class="settings-card" style="margin-bottom: 10px;">
+            <div style="font-family: var(--mono); font-size:10px; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom:8px;">Agent trace</div>
+            <div style="display:flex; gap:8px; margin-bottom:10px; align-items: center;"
+                 x-effect="traceAutoEffect">
+              <button class="settings-action" @click="loadTrace()">Refresh</button>
+              <label style="font-size:12px; color: var(--text2); display:flex; gap:6px; align-items:center; cursor:pointer;">
+                <input type="checkbox" x-model="traceAuto" style="margin:0;"/> Auto-refresh
+              </label>
+            </div>
+            <pre class="console" style="max-height: 280px;" x-text="traceText || 'No trace entries yet.'"></pre>
           </div>
-          <pre class="console" x-text="logsText || 'No task events yet.'"></pre>
-        </div>
-      </section>
 
-      <section class="settings-section">
-        <h2>LLM usage</h2>
-        <div class="settings-card">
-          <div style="display:flex; gap:8px; margin-bottom:10px;">
-            <button class="settings-action" @click="loadUsage()">Refresh usage</button>
+          <div class="settings-card" style="margin-bottom: 10px;">
+            <div style="font-family: var(--mono); font-size:10px; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom:8px;">Task log</div>
+            <div style="display:flex; gap:8px; margin-bottom:10px;">
+              <button class="settings-action" @click="loadLogs()">Refresh</button>
+            </div>
+            <pre class="console" x-text="logsText || 'No task events yet.'"></pre>
           </div>
-          <pre class="console" x-text="usageText || 'No usage recorded yet.'"></pre>
+
+          <div class="settings-card">
+            <div style="font-family: var(--mono); font-size:10px; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom:8px;">LLM usage</div>
+            <div style="display:flex; gap:8px; margin-bottom:10px;">
+              <button class="settings-action" @click="loadUsage()">Refresh usage</button>
+            </div>
+            <pre class="console" x-text="usageText || 'No usage recorded yet.'"></pre>
+          </div>
         </div>
       </section>
 
@@ -592,6 +839,11 @@ function kaptaan() {
     projects:     [],
     newProj:      { name: '', repo_url: '', github_token: '', activate: true },
     builderState: { running: null, queue: [], recent: [], updated: '' },
+    planTree:     { empty: true, plan: null, phases: [], repo_connected: false },
+    pendingPRs:   {}, // job_id -> message ref, so older cards stay actionable
+    askBusy:      false,
+    failureOpen:  false,
+    showLogs:     false,
 
     async init() {
       try {
@@ -649,10 +901,11 @@ function kaptaan() {
           const m = JSON.parse(e.data);
           if (m.type === 'builder_status') return;
           if (m.type === 'pr_review') {
-            const text = '**PR ready:** ' + (m.pr_url || '(local)') +
-              '\n\n' + (m.manager_note || '') +
-              '\n\nReply **yes** to merge or **no** to reject.';
-            this.push({ type: 'ask', text, ts: m.ts });
+            // Track every pending PR card by job_id so older cards remain
+            // actionable when reviews stack up.
+            m.resolved = '';
+            if (m.job_id) this.pendingPRs[m.job_id] = m;
+            this.push(m);
             return;
           }
           this.push(m);
@@ -735,6 +988,65 @@ function kaptaan() {
         if (!r.ok) return;
         this.builderState = await r.json();
       } catch {}
+    },
+
+    async loadPlanTree() {
+      try {
+        const r = await fetch('/api/plan/tree');
+        if (!r.ok) return;
+        this.planTree = await r.json();
+      } catch {}
+    },
+
+    canStop() {
+      const s = (this.status.state || '').toLowerCase();
+      const a = (this.status.agent || '').toLowerCase();
+      return s === 'thinking' || a === 'manager' || a === 'builder';
+    },
+
+    hasPendingPR() {
+      for (const k in this.pendingPRs) {
+        if (this.pendingPRs[k] && !this.pendingPRs[k].resolved) return true;
+      }
+      return false;
+    },
+
+    composerLocked() {
+      // Lock chat input when the agent is mid-thought, paused, or waiting
+      // for a yes/no on a PR (use the PR card buttons instead).
+      if (this.hasPendingPR()) return true;
+      const s = (this.status.state || '').toLowerCase();
+      return s === 'thinking' || s === 'paused';
+    },
+
+    lockMessage() {
+      if (this.hasPendingPR()) return 'Use the Approve / Reject buttons above to continue.';
+      const s = (this.status.state || '').toLowerCase();
+      if (s === 'paused') return 'Paused — press Resume to continue.';
+      if (s === 'thinking') {
+        const a = (this.status.agent || '').toLowerCase();
+        if (a === 'builder') return 'Builder is working — press Stop to interrupt.';
+        return 'Manager is thinking — press Stop to interrupt.';
+      }
+      return 'Waiting…';
+    },
+
+    async answerPR(m, choice) {
+      if (this.askBusy || m.resolved) return;
+      this.askBusy = true;
+      try {
+        const r = await fetch('/api/reply', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: choice }),
+        });
+        if (r.ok) {
+          m.resolved = choice;
+          if (m.job_id && this.pendingPRs[m.job_id]) delete this.pendingPRs[m.job_id];
+          // Echo the user's choice into the chat as a normal reply bubble.
+          this.push({ type: 'reply', text: choice, ts: new Date().toLocaleTimeString() });
+        }
+      } catch {}
+      finally { this.askBusy = false; }
     },
 
     async loadProjects() {

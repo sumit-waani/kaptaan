@@ -55,8 +55,15 @@ func (a *Agent) HandleUserMessage(ctx context.Context, text string) {
         a.manager.HandleUserMessage(ctx, text)
 }
 
-// Cancel aborts the in-flight Manager run, if any.
-func (a *Agent) Cancel(ctx context.Context) { a.manager.Cancel() }
+// Cancel aborts both the in-flight Manager run AND the running Builder job
+// (if any). Triggered by the global Stop button in the UI.
+func (a *Agent) Cancel(ctx context.Context) {
+        a.manager.Cancel()
+        a.builder.Cancel()
+}
+
+// BuilderBusy returns true if a builder job is currently running.
+func (a *Agent) BuilderBusy() bool { return a.builder.IsBusy() }
 
 func (a *Agent) Pause(ctx context.Context)                       { a.manager.Pause(ctx) }
 func (a *Agent) Resume(ctx context.Context)                      { a.manager.Resume(ctx) }

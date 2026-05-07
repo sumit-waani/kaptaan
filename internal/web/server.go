@@ -26,6 +26,7 @@ type Agent interface {
         IngestDoc(ctx context.Context, filename, content string) (int, error)
         GetStatus(ctx context.Context) (string, float64)
         SetNotifyBuilderState(fn func())
+        BuilderBusy() bool
 }
 
 // ─── SSE hub ───────────────────────────────────────────────────────────────
@@ -250,6 +251,7 @@ func (s *Server) Start(ctx context.Context) {
         mux.HandleFunc("/api/projects", s.requireAuth(s.handleProjects))
         mux.HandleFunc("/api/projects/", s.requireAuth(s.handleProjectByID))
         mux.HandleFunc("/api/builder/state", s.requireAuth(s.handleBuilderState))
+        mux.HandleFunc("/api/plan/tree", s.requireAuth(s.handlePlanTree))
 
         srv := &http.Server{
                 Addr:    "0.0.0.0:5000",
@@ -420,11 +422,36 @@ func (s *Server) buildStatusJSON(ctx context.Context) (string, error) {
                 planInfo = fmt.Sprintf("v%d — %d/%d tasks done", plan.Version, done, total)
         }
 
+        // Best-effort identity for the active agent. "manager" while it's
+        // thinking; "builder" when no manager run is active but a builder
+        // job is running. Used by the UI to show an agent badge.
+        agentIdentity := "idle"
+        switch state {
+        case "thinking":
+                agentIdentity = "manager"
+        case "paused":
+                agentIdentity = "paused"
+        default:
+                if s.agent != nil && s.agent.BuilderBusy() {
+                        agentIdentity = "builder"
+                        state = "thinking"
+                } else {
+                        agentIdentity = "ready"
+                }
+        }
+
+        repoConnected := false
+        if proj, err := s.db.GetProject(ctx); err == nil && proj != nil {
+                repoConnected = strings.TrimSpace(proj.RepoURL) != "" && strings.TrimSpace(proj.GithubToken) != ""
+        }
+
         out, err := json.Marshal(map[string]interface{}{
-                "project": name,
-                "state":   state,
-                "trust":   trust,
-                "plan":    planInfo,
+                "project":        name,
+                "state":          state,
+                "trust":          trust,
+                "plan":           planInfo,
+                "agent":          agentIdentity,
+                "repo_connected": repoConnected,
         })
         return string(out), err
 }

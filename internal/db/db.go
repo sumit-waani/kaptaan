@@ -233,18 +233,20 @@ func (d *DB) migrate(ctx context.Context) error {
         _, _ = d.pool.Exec(ctx, `ALTER TABLE project ADD COLUMN IF NOT EXISTS repo_url     TEXT NOT NULL DEFAULT ''`)
         _, _ = d.pool.Exec(ctx, `ALTER TABLE project ADD COLUMN IF NOT EXISTS github_token TEXT NOT NULL DEFAULT ''`)
 
-        // Make sure a default project (id=1) exists so foreign-key style
-        // scoping works on a fresh install. We also bump the SERIAL sequence
-        // past 1 in case the user later inserts more projects.
+        // Seed a default project ONLY when the table is completely empty (i.e.
+        // a brand-new install). Previously we re-inserted id=1 on every boot,
+        // which caused the "default project keeps coming back after delete"
+        // bug. Now, once a user deletes the default and creates their own,
+        // the default never resurrects.
         if _, err := d.pool.Exec(ctx, `
-            INSERT INTO project (id, name)
-            SELECT 1, 'default'
-            WHERE NOT EXISTS (SELECT 1 FROM project WHERE id=1)`); err != nil {
+            INSERT INTO project (name)
+            SELECT 'default'
+            WHERE NOT EXISTS (SELECT 1 FROM project)`); err != nil {
                 return fmt.Errorf("seed default project: %w", err)
         }
         _, _ = d.pool.Exec(ctx,
                 `SELECT setval(pg_get_serial_sequence('project','id'),
-                              GREATEST((SELECT MAX(id) FROM project), 1))`)
+                              GREATEST(COALESCE((SELECT MAX(id) FROM project), 1), 1))`)
 
         return nil
 }
