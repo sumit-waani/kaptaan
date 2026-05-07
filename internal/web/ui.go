@@ -6,7 +6,7 @@ import "strings"
 var indexHTML string
 
 func init() {
-	indexHTML = strings.ReplaceAll(rawHTML, "BTICK", "`")
+        indexHTML = strings.ReplaceAll(rawHTML, "BTICK", "`")
 }
 
 const rawHTML = `<!DOCTYPE html>
@@ -758,9 +758,6 @@ const rawHTML = `<!DOCTYPE html>
         <span class="state-pill"
           :class="(status.state||'').toLowerCase()"
           x-text="status.state||'idle'"></span>
-        <span class="trust-num"
-          x-show="status.trust>0"
-          x-text="Math.round(status.trust)+'%'"></span>
       </div>
 
       <div class="header-project" x-text="status.project||'Kaptaan'"></div>
@@ -830,15 +827,14 @@ const rawHTML = `<!DOCTYPE html>
         class="reply-input"
         x-model="replyText"
         x-ref="replyInput"
-        :placeholder="askActive ? 'Reply…' : 'Waiting for agent…'"
-        :disabled="!askActive"
+        :placeholder="askActive ? 'Reply…' : 'Type a message…'"
         rows="1"
         @input="autoResize($el)"
-        @keydown.enter.prevent="if(askActive && replyText.trim()) sendReply()"
+        @keydown.enter.prevent="if(replyText.trim()) sendReply()"
       ></textarea>
 
       <button class="send-btn"
-        :disabled="!askActive||!replyText.trim()"
+        :disabled="!replyText.trim()"
         @click="sendReply()"
         aria-label="Send">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
@@ -877,11 +873,6 @@ const rawHTML = `<!DOCTYPE html>
         <span class="cmd-icon">◈</span>
         <span class="cmd-label">Status</span>
         <span class="cmd-desc">Agent state</span>
-      </button>
-      <button class="sheet-cmd" @click="cmd('/api/score','score')">
-        <span class="cmd-icon">◎</span>
-        <span class="cmd-label">Trust score</span>
-        <span class="cmd-desc">Clarification progress</span>
       </button>
       <button class="sheet-cmd" @click="cmd('/api/tasks','tasks')">
         <span class="cmd-icon">≡</span>
@@ -1096,10 +1087,10 @@ function kaptaan() {
     // ── Reply
     async sendReply() {
       const text = this.replyText.trim();
-      if (!text || !this.askActive) return;
+      if (!text) return;
       this.replyText = '';
       this.$nextTick(() => this.autoResize(this.$refs.replyInput));
-      const r = await fetch('/api/reply', {
+      const r = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
