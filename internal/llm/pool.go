@@ -8,15 +8,29 @@ import (
         "io"
         "log"
         "net/http"
+        "os"
         "strconv"
         "sync"
         "time"
 )
 
 const (
-        deepseekURL   = "https://api.deepseek.com/v1/chat/completions"
-        deepseekModel = "deepseek-chat" // V3, supports tool calls + JSON mode
+        deepseekURL = "https://api.deepseek.com/v1/chat/completions"
+        // Default to DeepSeek's V4-Pro reasoning model. Override with
+        // DEEPSEEK_MODEL env var if a different DeepSeek model is desired
+        // (e.g. "deepseek-chat" for the lighter/cheaper "flash" tier).
+        defaultDeepseekModel = "deepseek-reasoner"
 )
+
+// deepseekModel is resolved at startup from $DEEPSEEK_MODEL or falls back
+// to the V4-Pro reasoner. Stored as a package-level var so the rest of the
+// pool code (status, requests) sees a single source of truth.
+var deepseekModel = func() string {
+        if m := os.Getenv("DEEPSEEK_MODEL"); m != "" {
+                return m
+        }
+        return defaultDeepseekModel
+}()
 
 // Retry policy: exponential backoff between attempts on transient failures.
 // Total wall-clock budget if all retries trigger: 0 + 3 + 6 + 12 = 21s of sleep
