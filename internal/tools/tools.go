@@ -1,3 +1,6 @@
+// Package tools exposes the tool surface the LLM can call. The Executor
+// glues those tools to a pluggable Runtime — either an E2B sandbox (used by
+// the Builder) or a no-op runtime (used by the Manager, which only plans).
 package tools
 
 import (
@@ -6,9 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -36,7 +38,7 @@ func Definitions() []llm.Tool {
 
 	return []llm.Tool{
 		def("shell",
-			"Run a bash command in the project workspace. Use for: go build, go test, git ops, file inspection.",
+			"Run a bash command in the sandbox workspace. Use for: go build, go test, git ops, file inspection.",
 			map[string]interface{}{
 				"cmd":     str("bash command to run"),
 				"timeout": intProp("timeout in seconds, default 60"),
@@ -45,14 +47,14 @@ func Definitions() []llm.Tool {
 		def("write_file",
 			"Write content to a file in the workspace. Creates parent dirs automatically. Content must be base64-encoded.",
 			map[string]interface{}{
-				"path":    str("file path relative to workspace"),
+				"path":    str("file path relative to the workspace root"),
 				"content": str("full file content, base64-encoded"),
 			}, []string{"path", "content"}),
 
 		def("read_file",
 			"Read a file from the workspace and return its content.",
 			map[string]interface{}{
-				"path": str("file path relative to workspace"),
+				"path": str("file path relative to the workspace root"),
 			}, []string{"path"}),
 
 		def("github_op",
@@ -105,11 +107,34 @@ func (r Result) String() string {
 	return r.Output
 }
 
-// Executor runs tool calls in the workspace.
+// Runtime is the substrate that actually executes tool side-effects.
+// Implementations: SandboxRuntime (E2B, used by Builder), NoopRuntime (Manager).
+type Runtime interface {
+	Shell(ctx context.Context, cmd string, timeoutSecs int) Result
+	WriteFile(ctx context.Context, path string, content []byte) Result
+	ReadFile(ctx context.Context, path string) Result
+	// Workdir is a human-readable label for the workspace root inside this runtime.
+	Workdir() string
+	// Close releases the runtime's resources (kills the sandbox, etc).
+	Close(ctx context.Context) error
+}
+
+// Executor binds tool calls to a Runtime + GitHub config. The Runtime decides
+// where shells run and where files live; GitHub config is shared across runtimes.
 type Executor struct {
-	WorkspaceDir string
-	GithubRepo   string
-	GithubToken  string
+	Runtime     Runtime
+	GithubRepo  string
+	GithubToken string
+}
+
+// NewNoopExecutor returns an Executor whose runtime errors out for shell/file
+// ops but still supports merge_pr via the GitHub REST API. Used by the Manager.
+func NewNoopExecutor(githubRepo, githubToken string) *Executor {
+	return &Executor{
+		Runtime:     NoopRuntime{},
+		GithubRepo:  githubRepo,
+		GithubToken: githubToken,
+	}
 }
 
 // Run dispatches a named tool call.
@@ -133,119 +158,75 @@ func (e *Executor) Run(ctx context.Context, name, argsJSON string) Result {
 	case "shell":
 		return e.Shell(ctx, str("cmd"), intVal("timeout", 60))
 	case "write_file":
-		return e.WriteFile(str("path"), str("content"))
+		return e.WriteFile(ctx, str("path"), str("content"))
 	case "read_file":
-		return e.ReadFile(str("path"))
+		return e.ReadFile(ctx, str("path"))
 	case "github_op":
 		return e.GithubOp(ctx, str("op"), str("args"))
 	default:
-		// Handled at agent layer
 		return Result{Output: "handled at agent layer: " + name}
 	}
 }
 
-// Shell runs a bash command with timeout.
+// Shell runs a bash command in the runtime.
 func (e *Executor) Shell(ctx context.Context, cmd string, timeoutSecs int) Result {
-	if timeoutSecs <= 0 {
-		timeoutSecs = 60
-	}
-	tctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
-	defer cancel()
-
-	c := exec.CommandContext(tctx, "bash", "-c", cmd)
-	if e.WorkspaceDir != "" {
-		c.Dir = e.WorkspaceDir
-	}
-	env := os.Environ()
-	if e.GithubToken != "" {
-		env = append(env, "GH_TOKEN="+e.GithubToken, "GITHUB_TOKEN="+e.GithubToken)
-	}
-	c.Env = env
-
-	var stdout, stderr bytes.Buffer
-	c.Stdout = &stdout
-	c.Stderr = &stderr
-
-	err := c.Run()
-	out := stdout.String()
-	if stderr.Len() > 0 {
-		out += "\nSTDERR:\n" + stderr.String()
-	}
-	out = capOutput(out, 8000)
-
-	if err != nil {
-		return Result{Output: out + "\nEXIT: " + err.Error(), IsErr: true}
-	}
-	return Result{Output: out}
+	return e.Runtime.Shell(ctx, cmd, timeoutSecs)
 }
 
-// WriteFile writes base64-encoded content to a workspace-relative path.
-func (e *Executor) WriteFile(path, contentB64 string) Result {
+// WriteFile decodes base64 content and writes via the runtime.
+func (e *Executor) WriteFile(ctx context.Context, path, contentB64 string) Result {
 	data, err := base64.StdEncoding.DecodeString(contentB64)
 	if err != nil {
-		// Fallback: treat as raw text
+		// Tolerate raw text from sloppy LLM output.
 		data = []byte(contentB64)
 	}
-
-	fullPath := path
-	if e.WorkspaceDir != "" && !filepath.IsAbs(path) {
-		fullPath = filepath.Join(e.WorkspaceDir, path)
-	}
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		return Result{Output: "mkdir failed: " + err.Error(), IsErr: true}
-	}
-	if err := os.WriteFile(fullPath, data, 0644); err != nil {
-		return Result{Output: "write failed: " + err.Error(), IsErr: true}
-	}
-	return Result{Output: fmt.Sprintf("wrote %d bytes → %s", len(data), path)}
+	return e.Runtime.WriteFile(ctx, path, data)
 }
 
-// ReadFile reads a workspace-relative file.
-func (e *Executor) ReadFile(path string) Result {
-	fullPath := path
-	if e.WorkspaceDir != "" && !filepath.IsAbs(path) {
-		fullPath = filepath.Join(e.WorkspaceDir, path)
-	}
-	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		return Result{Output: "read failed: " + err.Error(), IsErr: true}
-	}
-	return Result{Output: capOutput(string(data), 8000)}
+// ReadFile reads via the runtime.
+func (e *Executor) ReadFile(ctx context.Context, path string) Result {
+	return e.Runtime.ReadFile(ctx, path)
 }
 
-// GithubOp runs a GitHub CLI operation.
+// GithubOp runs a GitHub CLI operation. merge_pr is special-cased to use the
+// REST API directly so it works even when there is no live workspace runtime
+// (e.g. the Manager merging an approved PR).
 func (e *Executor) GithubOp(ctx context.Context, op, args string) Result {
+	if op == "merge_pr" {
+		return e.mergePR(ctx, args)
+	}
+	wd := e.Runtime.Workdir()
+	cdPrefix := ""
+	if wd != "" {
+		cdPrefix = fmt.Sprintf("cd %q && ", wd)
+	}
+
 	var cmd string
 	switch op {
 	case "clone":
 		if e.GithubRepo == "" {
 			return Result{Output: "GITHUB_REPO not configured", IsErr: true}
 		}
-		if _, err := os.Stat(e.WorkspaceDir); err == nil {
-			cmd = fmt.Sprintf("cd %q && git pull origin HEAD", e.WorkspaceDir)
-		} else {
-			cmd = fmt.Sprintf("gh repo clone %s %q", e.GithubRepo, e.WorkspaceDir)
-		}
+		// Always clone fresh — the sandbox is ephemeral so there is nothing to pull.
+		cmd = fmt.Sprintf("rm -rf %q && gh repo clone %s %q", wd, e.GithubRepo, wd)
 	case "status":
-		cmd = fmt.Sprintf("cd %q && git status && git log --oneline -5", e.WorkspaceDir)
+		cmd = cdPrefix + "git status && git log --oneline -5"
 	case "push":
 		branch := args
 		if branch == "" {
 			branch = "main"
 		}
-		cmd = fmt.Sprintf("cd %q && git add -A && git commit -m 'cto-agent: update' --allow-empty && git push origin %s",
-			e.WorkspaceDir, branch)
+		cmd = cdPrefix + fmt.Sprintf("git add -A && git commit -m 'kaptaan: update' --allow-empty && git push -u origin %s", branch)
 	case "create_branch":
 		if args == "" {
 			return Result{Output: "branch name required", IsErr: true}
 		}
-		cmd = fmt.Sprintf("cd %q && git checkout -b %s", e.WorkspaceDir, args)
+		cmd = cdPrefix + fmt.Sprintf("git checkout -b %s", args)
 	case "checkout_branch":
 		if args == "" {
 			return Result{Output: "branch name required", IsErr: true}
 		}
-		cmd = fmt.Sprintf("cd %q && git checkout %s 2>/dev/null || git checkout -b %s",
-			e.WorkspaceDir, args, args)
+		cmd = cdPrefix + fmt.Sprintf("git checkout %s 2>/dev/null || git checkout -b %s", args, args)
 	case "pr_create":
 		parts := strings.SplitN(args, "|", 3)
 		if len(parts) < 2 {
@@ -256,27 +237,55 @@ func (e *Executor) GithubOp(ctx context.Context, op, args string) Result {
 		if len(parts) == 3 && parts[2] != "" {
 			branchFlag = fmt.Sprintf(" --head %q", parts[2])
 		}
-		cmd = fmt.Sprintf(`cd %q && gh pr create --title %q --body %q%s`,
-			e.WorkspaceDir, title, body, branchFlag)
+		cmd = cdPrefix + fmt.Sprintf(`gh pr create --title %q --body %q%s`, title, body, branchFlag)
 	case "pr_list":
-		cmd = fmt.Sprintf("cd %q && gh pr list --limit 10", e.WorkspaceDir)
-	case "merge_pr":
-		if args == "" {
-			return Result{Output: "pr number required", IsErr: true}
-		}
-		cmd = fmt.Sprintf("cd %q && gh pr merge %s --merge --delete-branch", e.WorkspaceDir, args)
+		cmd = cdPrefix + "gh pr list --limit 10"
 	default:
 		return Result{Output: "unknown github_op: " + op, IsErr: true}
 	}
-	return e.Shell(ctx, cmd, 120)
+	return e.Runtime.Shell(ctx, cmd, 180)
 }
 
-// ScanRepo runs a file tree scan and returns output.
+// mergePR merges a PR via the GitHub REST API (no shell required). Used by the
+// Manager which doesn't have a live sandbox runtime.
+func (e *Executor) mergePR(ctx context.Context, prNumber string) Result {
+	prNumber = strings.TrimSpace(prNumber)
+	if prNumber == "" {
+		return Result{Output: "pr number required", IsErr: true}
+	}
+	if e.GithubRepo == "" || e.GithubToken == "" {
+		return Result{Output: "GITHUB_REPO and GITHUB_TOKEN must be set", IsErr: true}
+	}
+	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%s/merge", e.GithubRepo, prNumber)
+	body, _ := json.Marshal(map[string]string{"merge_method": "merge"})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+e.GithubToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Content-Type", "application/json")
+	cl := &http.Client{Timeout: 30 * time.Second}
+	res, err := cl.Do(req)
+	if err != nil {
+		return Result{Output: "merge http: " + err.Error(), IsErr: true}
+	}
+	defer res.Body.Close()
+	respBody, _ := io.ReadAll(res.Body)
+	if res.StatusCode/100 != 2 {
+		return Result{Output: fmt.Sprintf("merge failed: %s: %s", res.Status, string(respBody)), IsErr: true}
+	}
+	return Result{Output: "merged: " + capOutput(string(respBody), 800)}
+}
+
+// ScanRepo returns a brief snapshot of the workspace, or a stub if the runtime
+// has no workspace (Manager). It is purely informational for the LLM prompt.
 func (e *Executor) ScanRepo(ctx context.Context) (string, error) {
-	result := e.Shell(ctx,
+	r := e.Runtime.Shell(ctx,
 		`find . -type f -name "*.go" | head -100 && echo "---" && cat go.mod 2>/dev/null || echo "no go.mod"`,
 		30)
-	return result.Output, nil
+	if r.IsErr {
+		return "(repo not loaded — Manager works from project docs only; Builder sees the live tree)", nil
+	}
+	return r.Output, nil
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

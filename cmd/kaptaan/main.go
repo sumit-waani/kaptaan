@@ -61,18 +61,30 @@ func main() {
         })
         log.Println("✅ LLM pool ready")
 
-        // ── Tool executor ───────────────────────────────────────────────────
-        executor := &tools.Executor{
-                WorkspaceDir: workspaceDir(),
-                GithubRepo:   os.Getenv("GITHUB_REPO"),
-                GithubToken:  os.Getenv("GITHUB_TOKEN"),
+        // ── Manager executor (no live workspace; merges PRs via GitHub REST) ─
+        githubRepo := os.Getenv("GITHUB_REPO")
+        githubToken := os.Getenv("GITHUB_TOKEN")
+        managerExec := tools.NewNoopExecutor(githubRepo, githubToken)
+
+        // ── Builder config (per-job E2B sandbox) ────────────────────────────
+        builderCfg := agent.BuilderConfig{
+                E2BAPIKey:   os.Getenv("E2B_API_KEY"),
+                GithubRepo:  githubRepo,
+                GithubToken: githubToken,
+        }
+        if builderCfg.E2BAPIKey == "" {
+                log.Println("⚠️  E2B_API_KEY not set — Builder jobs will fail until it is configured.")
+        }
+        if githubToken == "" || githubRepo == "" {
+                log.Println("⚠️  GITHUB_REPO/GITHUB_TOKEN not fully set — Builder will not be able to clone or open PRs.")
         }
 
         // ── Wire agent ──────────────────────────────────────────────────────
         a := agent.New(
                 database,
                 pool,
-                executor,
+                managerExec,
+                builderCfg,
                 webServer.Send,
                 webServer.Ask,
                 webServer.SendPRReview,
@@ -111,10 +123,3 @@ func mustEnv(key string) string {
         return v
 }
 
-// workspaceDir returns the local path where the repo will be cloned.
-func workspaceDir() string {
-        if d := os.Getenv("WORKSPACE_DIR"); d != "" {
-                return d
-        }
-        return "/tmp/kaptaan-workspace"
-}

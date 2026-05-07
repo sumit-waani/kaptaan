@@ -11,6 +11,7 @@ import (
 
         "github.com/cto-agent/cto-agent/internal/db"
         "github.com/cto-agent/cto-agent/internal/llm"
+        "github.com/cto-agent/cto-agent/internal/sandbox"
         "github.com/cto-agent/cto-agent/internal/tools"
         "github.com/jackc/pgx/v5"
 )
@@ -30,16 +31,35 @@ RULES:
 9. Log significant events via log_event.
 10. Never ask the human questions — use ask_founder only if truly blocked on a requirement ambiguity.`
 
-const maxBuildRetries = 3
-const maxBuilderIterations = 50
-const maxJobRetries = 2
+const (
+        maxBuildRetries      = 3
+        maxBuilderIterations = 50
+        maxJobRetries        = 2
+
+        // sandboxRepoDir is the absolute path inside every E2B sandbox where the
+        // repo gets cloned. The user inside envd is always "user" → /home/user/repo.
+        sandboxRepoDir = "/home/user/repo"
+
+        // sandboxLifetimeSecs is how long we ask E2B to keep the sandbox alive.
+        // Generous so even slow CI-style builds finish before the platform kills it.
+        sandboxLifetimeSecs = 1800
+)
+
+// BuilderConfig is the per-environment config the Builder needs to spin up
+// fresh per-job sandboxes.
+type BuilderConfig struct {
+        E2BAPIKey   string
+        GithubRepo  string
+        GithubToken string
+}
 
 // Builder runs as a background goroutine, picks queued jobs from DB,
-// executes them (code → build → test → PR), and updates job status.
+// spins up a fresh E2B sandbox per job, executes the build loop inside it,
+// then destroys the sandbox.
 type Builder struct {
         db                *db.DB
         llm               *llm.Pool
-        exec              *tools.Executor
+        cfg               BuilderConfig
         send              func(string)
         sendBuilderStatus func(taskTitle, milestone, detail string)
         onJobDone         onJobDoneFn
@@ -57,12 +77,12 @@ type buildRuntime struct {
         diffSummary   string
 }
 
-func NewBuilder(database *db.DB, pool *llm.Pool, executor *tools.Executor,
+func NewBuilder(database *db.DB, pool *llm.Pool, cfg BuilderConfig,
         send func(string), sendBuilderStatus func(taskTitle, milestone, detail string)) *Builder {
         return &Builder{
                 db:                database,
                 llm:               pool,
-                exec:              executor,
+                cfg:               cfg,
                 send:              send,
                 sendBuilderStatus: sendBuilderStatus,
                 notify:            make(chan struct{}, 1),
@@ -123,8 +143,9 @@ func (b *Builder) recoverStaleJobs(ctx context.Context) {
         b.Notify()
 }
 
-// processNextJob picks the oldest queued builder_job, marks it running,
-// runs the agentic build loop, and applies retry policy on failures.
+// processNextJob picks the oldest queued builder_job, marks it running, spins
+// up a fresh sandbox, runs the agentic build loop, and applies retry policy.
+// The sandbox is always destroyed at the end (success or failure).
 func (b *Builder) processNextJob(ctx context.Context) error {
         if b.db.KVGetDefault(ctx, "agent_paused", "0") == "1" {
                 return nil
@@ -149,26 +170,15 @@ func (b *Builder) processNextJob(ctx context.Context) error {
         _ = b.db.LogEvent(ctx, task.ID, "builder_start", fmt.Sprintf("job_id=%d", job.ID))
         b.send(fmt.Sprintf("🔧 Builder started: %s", task.Title))
 
-        if err := b.runBuildLoop(ctx, job, task); err != nil {
-                if job.RetryCount < maxJobRetries {
-                        nextRetry := job.RetryCount + 1
-                        _ = b.db.UpdateBuilderJobRetry(ctx, job.ID, nextRetry)
-                        _ = b.db.LogEvent(ctx, task.ID, "builder_retry", fmt.Sprintf("attempt=%d err=%s", nextRetry, truncateStr(err.Error(), 300)))
-                        b.send(fmt.Sprintf("⚠️ Builder job failed (attempt %d/%d). Retrying in 60s...", nextRetry, maxJobRetries+1))
-                        select {
-                        case <-time.After(60 * time.Second):
-                        case <-ctx.Done():
-                                return ctx.Err()
-                        }
-                        _ = b.db.RequeueBuilderJob(ctx, job.ID)
-                        return nil
-                }
+        exec, cleanup, err := b.spawnJobExecutor(ctx, task)
+        if err != nil {
+                _ = b.db.LogEvent(ctx, task.ID, "sandbox_error", truncateStr(err.Error(), 500))
+                return b.handleJobFailure(ctx, job, task, fmt.Errorf("sandbox spawn: %w", err))
+        }
+        defer cleanup()
 
-                _ = b.db.UpdateBuilderJobStatus(ctx, job.ID, "failed")
-                _ = b.db.UpdateTaskStatus(ctx, job.TaskID, "failed")
-                _ = b.db.LogEvent(ctx, task.ID, "builder_failed", truncateStr(err.Error(), 500))
-                b.send(fmt.Sprintf("❌ Builder job permanently failed after %d attempts: %s", maxJobRetries+1, task.Title))
-                return nil
+        if err := b.runBuildLoop(ctx, exec, job, task); err != nil {
+                return b.handleJobFailure(ctx, job, task, err)
         }
 
         if b.onJobDone != nil {
@@ -179,9 +189,107 @@ func (b *Builder) processNextJob(ctx context.Context) error {
         return nil
 }
 
-// runBuildLoop is the LLM + tool loop for one job.
-func (b *Builder) runBuildLoop(ctx context.Context, job *db.BuilderJob, task *db.Task) error {
-        cloneResult := b.exec.GithubOp(ctx, "clone", "")
+// spawnJobExecutor creates a fresh E2B sandbox, bootstraps it (Go toolchain +
+// git config + gh auth), and returns an Executor backed by a SandboxRuntime
+// pointing at the sandbox's repo dir. The cleanup func always destroys the
+// sandbox — call it via defer.
+func (b *Builder) spawnJobExecutor(ctx context.Context, task *db.Task) (*tools.Executor, func(), error) {
+        if b.cfg.E2BAPIKey == "" {
+                return nil, func() {}, fmt.Errorf("E2B_API_KEY not configured")
+        }
+        if b.cfg.GithubToken == "" {
+                return nil, func() {}, fmt.Errorf("GITHUB_TOKEN not configured")
+        }
+
+        b.status(task.Title, "sandbox", "Provisioning fresh E2B sandbox")
+        sb, err := sandbox.Create(ctx, b.cfg.E2BAPIKey, "base", sandboxLifetimeSecs)
+        if err != nil {
+                return nil, func() {}, err
+        }
+        log.Printf("[builder] sandbox %s created for task %d", sb.ID, task.ID)
+
+        cleanup := func() {
+                killCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+                defer cancel()
+                if err := sb.Kill(killCtx); err != nil {
+                        log.Printf("[builder] sandbox %s kill: %v", sb.ID, err)
+                } else {
+                        log.Printf("[builder] sandbox %s destroyed", sb.ID)
+                }
+        }
+
+        // Strip everything from the host env — only forward what the sandbox needs.
+        // gh CLI authenticates from GH_TOKEN; Go defaults GOPATH/GOCACHE under HOME.
+        env := map[string]string{
+                "GH_TOKEN": b.cfg.GithubToken,
+                "PATH":     "/home/user/.local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "HOME":     "/home/user",
+        }
+
+        b.status(task.Title, "sandbox", "Installing Go toolchain")
+        bootstrap := `set -e
+mkdir -p $HOME/.local $HOME/go $HOME/.cache/go-build
+if [ ! -x $HOME/.local/go/bin/go ]; then
+  cd $HOME/.local
+  curl -sSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz -o go.tar.gz
+  tar -xzf go.tar.gz
+  rm go.tar.gz
+fi
+git config --global user.email "kaptaan@bot.local"
+git config --global user.name  "Kaptaan Bot"
+echo "go: $($HOME/.local/go/bin/go version)"
+echo "gh: $(gh --version | head -1)"`
+        res, err := sb.Run(ctx, bootstrap, "/home/user", env, 5*time.Minute)
+        if err != nil {
+                cleanup()
+                return nil, func() {}, fmt.Errorf("bootstrap: %w", err)
+        }
+        if res.ExitCode != 0 {
+                cleanup()
+                return nil, func() {}, fmt.Errorf("bootstrap failed (exit %d): %s\n%s",
+                        res.ExitCode, res.Stdout, res.Stderr)
+        }
+        log.Printf("[builder] sandbox %s bootstrapped: %s", sb.ID, strings.TrimSpace(res.Stdout))
+
+        rt := &tools.SandboxRuntime{
+                Sandbox: sb,
+                Cwd:     sandboxRepoDir,
+                Env:     env,
+        }
+        exec := &tools.Executor{
+                Runtime:     rt,
+                GithubRepo:  b.cfg.GithubRepo,
+                GithubToken: b.cfg.GithubToken,
+        }
+        return exec, cleanup, nil
+}
+
+// handleJobFailure encapsulates the retry-or-fail policy.
+func (b *Builder) handleJobFailure(ctx context.Context, job *db.BuilderJob, task *db.Task, err error) error {
+        if job.RetryCount < maxJobRetries {
+                nextRetry := job.RetryCount + 1
+                _ = b.db.UpdateBuilderJobRetry(ctx, job.ID, nextRetry)
+                _ = b.db.LogEvent(ctx, task.ID, "builder_retry", fmt.Sprintf("attempt=%d err=%s", nextRetry, truncateStr(err.Error(), 300)))
+                b.send(fmt.Sprintf("⚠️ Builder job failed (attempt %d/%d). Retrying in 60s...", nextRetry, maxJobRetries+1))
+                select {
+                case <-time.After(60 * time.Second):
+                case <-ctx.Done():
+                        return ctx.Err()
+                }
+                _ = b.db.RequeueBuilderJob(ctx, job.ID)
+                return nil
+        }
+
+        _ = b.db.UpdateBuilderJobStatus(ctx, job.ID, "failed")
+        _ = b.db.UpdateTaskStatus(ctx, job.TaskID, "failed")
+        _ = b.db.LogEvent(ctx, task.ID, "builder_failed", truncateStr(err.Error(), 500))
+        b.send(fmt.Sprintf("❌ Builder job permanently failed after %d attempts: %s", maxJobRetries+1, task.Title))
+        return nil
+}
+
+// runBuildLoop is the LLM + tool loop for one job, scoped to a single sandbox.
+func (b *Builder) runBuildLoop(ctx context.Context, exec *tools.Executor, job *db.BuilderJob, task *db.Task) error {
+        cloneResult := exec.GithubOp(ctx, "clone", "")
         if cloneResult.IsErr {
                 return fmt.Errorf("repo setup: %s", cloneResult.Output)
         }
@@ -190,9 +298,9 @@ func (b *Builder) runBuildLoop(ctx context.Context, job *db.BuilderJob, task *db
         if strings.TrimSpace(branch) == "" {
                 branch = fmt.Sprintf("feature/task-%d-%s", task.ID, slugify(task.Title))
         }
-        checkout := b.exec.GithubOp(ctx, "checkout_branch", branch)
+        checkout := exec.GithubOp(ctx, "checkout_branch", branch)
         if checkout.IsErr {
-                create := b.exec.GithubOp(ctx, "create_branch", branch)
+                create := exec.GithubOp(ctx, "create_branch", branch)
                 if create.IsErr {
                         return fmt.Errorf("branch setup: %s", create.Output)
                 }
@@ -212,6 +320,7 @@ func (b *Builder) runBuildLoop(ctx context.Context, job *db.BuilderJob, task *db
 TASK TITLE: %s
 TASK DESCRIPTION: %s
 BRANCH: %s
+WORKSPACE: %s
 
 SUBTASKS:
 %s
@@ -224,6 +333,7 @@ Relevant docs:
                 task.Title,
                 task.Description,
                 branch,
+                sandboxRepoDir,
                 subtaskList.String(),
                 docCtx,
         )
@@ -256,7 +366,7 @@ Relevant docs:
                 }
 
                 for _, tc := range msg.ToolCalls {
-                        output := b.handleToolCall(ctx, task, tc, runtime)
+                        output := b.handleToolCall(ctx, exec, task, tc, runtime)
                         messages = append(messages, llm.Message{
                                 Role:       "tool",
                                 ToolCallID: tc.ID,
@@ -270,7 +380,7 @@ Relevant docs:
 
         b.status(task.Title, "building", "Running go build ./...")
         if runtime.buildOutput == "" {
-                buildResult := b.exec.Shell(ctx, fmt.Sprintf("cd %q && go build ./... 2>&1", b.exec.WorkspaceDir), 120)
+                buildResult := exec.Shell(ctx, "go build ./... 2>&1", 180)
                 runtime.buildOutput = buildResult.Output
                 if buildResult.IsErr {
                         return fmt.Errorf("final build failed: %s", truncateStr(buildResult.Output, 1000))
@@ -280,7 +390,7 @@ Relevant docs:
 
         if !runtime.testPassed {
                 b.status(task.Title, "testing", "Running go test ./... -cover")
-                result := b.exec.Shell(ctx, "cd \""+b.exec.WorkspaceDir+"\" && go test ./... -cover 2>&1", 180)
+                result := exec.Shell(ctx, "go test ./... -cover 2>&1", 240)
                 runtime.testOutput = result.Output
                 if result.IsErr {
                         return fmt.Errorf("final tests failed: %s", truncateStr(result.Output, 1000))
@@ -292,7 +402,7 @@ Relevant docs:
         if runtime.prURL == "" {
                 title := fmt.Sprintf("Task %d: %s", task.ID, task.Title)
                 body := fmt.Sprintf("Implements task #%d\n\n%s", task.ID, task.Description)
-                prCreate := b.exec.GithubOp(ctx, "pr_create", fmt.Sprintf("%s|%s|%s", title, body, branch))
+                prCreate := exec.GithubOp(ctx, "pr_create", fmt.Sprintf("%s|%s|%s", title, body, branch))
                 if prCreate.IsErr {
                         return fmt.Errorf("create pr: %s", truncateStr(prCreate.Output, 1000))
                 }
@@ -309,8 +419,8 @@ Relevant docs:
                 return fmt.Errorf("pr number not found")
         }
 
-        diffResult := b.exec.Shell(ctx,
-                fmt.Sprintf("cd %q && gh pr diff %d 2>&1 | head -200", b.exec.WorkspaceDir, runtime.prNumber),
+        diffResult := exec.Shell(ctx,
+                fmt.Sprintf("gh pr diff %d 2>&1 | head -200", runtime.prNumber),
                 60,
         )
         runtime.diffSummary = truncateStr(diffResult.Output, 5000)
@@ -328,7 +438,7 @@ Relevant docs:
         return nil
 }
 
-func (b *Builder) handleToolCall(ctx context.Context, task *db.Task, tc llm.ToolCall, rt *buildRuntime) string {
+func (b *Builder) handleToolCall(ctx context.Context, exec *tools.Executor, task *db.Task, tc llm.ToolCall, rt *buildRuntime) string {
         args := parseToolArgs(tc.Function.Arguments)
         _ = b.db.LogEvent(ctx, task.ID, "tool_call", fmt.Sprintf("%s: %s", tc.Function.Name, truncateStr(tc.Function.Arguments, 200)))
 
@@ -373,10 +483,10 @@ func (b *Builder) handleToolCall(ctx context.Context, task *db.Task, tc llm.Tool
                 if path != "" {
                         b.status(task.Title, "coding", fmt.Sprintf("Updating %s", path))
                 }
-                result := b.exec.Run(ctx, tc.Function.Name, tc.Function.Arguments)
+                result := exec.Run(ctx, tc.Function.Name, tc.Function.Arguments)
                 out := result.String()
                 if strings.HasSuffix(path, ".go") {
-                        build := b.exec.Shell(ctx, fmt.Sprintf("cd %q && go build ./... 2>&1", b.exec.WorkspaceDir), 120)
+                        build := exec.Shell(ctx, "go build ./... 2>&1", 180)
                         rt.buildOutput = build.Output
                         if build.IsErr {
                                 rt.buildFailures++
@@ -396,7 +506,7 @@ func (b *Builder) handleToolCall(ctx context.Context, task *db.Task, tc llm.Tool
                 if strings.Contains(cmd, "go test") {
                         b.status(task.Title, "testing", "Running go test ./... -cover")
                 }
-                result := b.exec.Run(ctx, tc.Function.Name, tc.Function.Arguments)
+                result := exec.Run(ctx, tc.Function.Name, tc.Function.Arguments)
                 out := result.String()
                 if strings.Contains(cmd, "go test") {
                         rt.testOutput = out
@@ -416,7 +526,7 @@ func (b *Builder) handleToolCall(ctx context.Context, task *db.Task, tc llm.Tool
 
         case "github_op":
                 op := strings.TrimSpace(args["op"])
-                gResult := b.exec.GithubOp(ctx, op, args["args"])
+                gResult := exec.GithubOp(ctx, op, args["args"])
                 out := gResult.String()
                 if op == "pr_create" && !gResult.IsErr {
                         prURL := extractPRURL(gResult.Output)
@@ -429,7 +539,7 @@ func (b *Builder) handleToolCall(ctx context.Context, task *db.Task, tc llm.Tool
                 return out
 
         default:
-                result := b.exec.Run(ctx, tc.Function.Name, tc.Function.Arguments)
+                result := exec.Run(ctx, tc.Function.Name, tc.Function.Arguments)
                 return result.String()
         }
 }
