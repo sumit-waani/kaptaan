@@ -38,9 +38,15 @@ const indexHTML = `<!doctype html>
   --compose: 80px;
 }
 
-html, body {
+html {
   height: 100%;
-  height: -webkit-fill-available;
+}
+
+body {
+  /* min-height (not height) with -webkit-fill-available is the correct
+     pattern for iOS Safari; plain height: 100% works on everything else. */
+  height: 100%;
+  min-height: -webkit-fill-available;
   background: var(--black);
   color: var(--text);
   font-family: var(--font);
@@ -130,8 +136,14 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 .app {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  height: -webkit-fill-available;
+  /* Use viewport units directly so the shell always fills exactly the visible
+     screen on mobile browsers regardless of address-bar state.
+     dvh = dynamic viewport height (adjusts as browser chrome shows/hides).
+     svh = small viewport height (safe fallback when dvh is unsupported).
+     100vh = last-resort fallback for very old browsers. */
+  height: 100vh;
+  height: 100svh;
+  height: 100dvh;
   overflow: hidden;
   background: var(--black);
 }
