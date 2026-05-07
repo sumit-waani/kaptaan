@@ -18,6 +18,7 @@ const rawHTML = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Kaptaan — CTO Agent</title>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12/dist/htmx.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
   <style>
@@ -282,8 +283,10 @@ function app() {
 
     renderMd(text) {
       if (!text) return '';
-      try { return marked.parse(String(text), { breaks: true, gfm: true }); }
-      catch (_) { return String(text); }
+      try {
+        const raw = marked.parse(String(text), { breaks: true, gfm: true });
+        return DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } });
+      } catch (_) { return DOMPurify.sanitize(String(text)); }
     },
 
     push(text, type) {
