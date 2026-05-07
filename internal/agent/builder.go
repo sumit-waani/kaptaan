@@ -32,14 +32,16 @@ RULES:
 
 const maxBuildRetries = 3
 const maxBuilderIterations = 50
+const maxJobRetries = 2
 
 // Builder runs as a background goroutine, picks queued jobs from DB,
 // executes them (code → build → test → PR), and updates job status.
 type Builder struct {
-	db   *db.DB
-	llm  *llm.Pool
-	exec *tools.Executor
-	send func(string)
+	db                *db.DB
+	llm               *llm.Pool
+	exec              *tools.Executor
+	send              func(string)
+	sendBuilderStatus func(taskTitle, milestone, detail string)
 
 	notify chan struct{}
 }
@@ -55,13 +57,14 @@ type buildRuntime struct {
 }
 
 func NewBuilder(database *db.DB, pool *llm.Pool, executor *tools.Executor,
-	send func(string)) *Builder {
+	send func(string), sendBuilderStatus func(taskTitle, milestone, detail string)) *Builder {
 	return &Builder{
-		db:     database,
-		llm:    pool,
-		exec:   executor,
-		send:   send,
-		notify: make(chan struct{}, 1),
+		db:                database,
+		llm:               pool,
+		exec:              executor,
+		send:              send,
+		sendBuilderStatus: sendBuilderStatus,
+		notify:            make(chan struct{}, 1),
 	}
 }
 
@@ -73,8 +76,15 @@ func (b *Builder) Notify() {
 	}
 }
 
+func (b *Builder) status(taskTitle, milestone, detail string) {
+	if b.sendBuilderStatus != nil {
+		b.sendBuilderStatus(taskTitle, milestone, detail)
+	}
+}
+
 // Run is the builder's main loop. Runs forever until ctx is cancelled.
 func (b *Builder) Run(ctx context.Context) {
+	b.recoverStaleJobs(ctx)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -95,8 +105,21 @@ func (b *Builder) Run(ctx context.Context) {
 	}
 }
 
+func (b *Builder) recoverStaleJobs(ctx context.Context) {
+	stale, err := b.db.GetStaleBuilderJobs(ctx)
+	if err != nil || len(stale) == 0 {
+		return
+	}
+	for _, job := range stale {
+		log.Printf("[builder] recovering stale job %d for task %d", job.ID, job.TaskID)
+		_ = b.db.RequeueBuilderJob(ctx, job.ID)
+		b.send(fmt.Sprintf("🔄 Recovering interrupted build job for task ID %d", job.TaskID))
+	}
+	b.Notify()
+}
+
 // processNextJob picks the oldest queued builder_job, marks it running,
-// runs the agentic build loop, updates job with results.
+// runs the agentic build loop, and applies retry policy on failures.
 func (b *Builder) processNextJob(ctx context.Context) error {
 	if b.db.KVGetDefault(ctx, "agent_paused", "0") == "1" {
 		return nil
@@ -112,7 +135,7 @@ func (b *Builder) processNextJob(ctx context.Context) error {
 
 	task, err := b.db.GetTask(ctx, job.TaskID)
 	if err != nil {
-		_ = b.db.UpdateBuilderJob(ctx, job.ID, "failed", "", 0, "", "", "task lookup failed")
+		_ = b.db.UpdateBuilderJobStatus(ctx, job.ID, "failed")
 		return err
 	}
 
@@ -122,10 +145,24 @@ func (b *Builder) processNextJob(ctx context.Context) error {
 	b.send(fmt.Sprintf("🔧 Builder started: %s", task.Title))
 
 	if err := b.runBuildLoop(ctx, job, task); err != nil {
-		_ = b.db.UpdateBuilderJob(ctx, job.ID, "failed", job.PRURL, job.PRNumber, job.DiffSummary, job.TestOutput, err.Error())
-		_ = b.db.UpdateTaskStatus(ctx, task.ID, "failed")
+		if job.RetryCount < maxJobRetries {
+			nextRetry := job.RetryCount + 1
+			_ = b.db.UpdateBuilderJobRetry(ctx, job.ID, nextRetry)
+			_ = b.db.LogEvent(ctx, task.ID, "builder_retry", fmt.Sprintf("attempt=%d err=%s", nextRetry, truncateStr(err.Error(), 300)))
+			b.send(fmt.Sprintf("⚠️ Builder job failed (attempt %d/%d). Retrying in 60s...", nextRetry, maxJobRetries+1))
+			select {
+			case <-time.After(60 * time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			_ = b.db.RequeueBuilderJob(ctx, job.ID)
+			return nil
+		}
+
+		_ = b.db.UpdateBuilderJobStatus(ctx, job.ID, "failed")
+		_ = b.db.UpdateTaskStatus(ctx, job.TaskID, "failed")
 		_ = b.db.LogEvent(ctx, task.ID, "builder_failed", truncateStr(err.Error(), 500))
-		b.send(fmt.Sprintf("❌ Builder failed: %s", task.Title))
+		b.send(fmt.Sprintf("❌ Builder job permanently failed after %d attempts: %s", maxJobRetries+1, task.Title))
 		return nil
 	}
 
@@ -150,6 +187,9 @@ func (b *Builder) runBuildLoop(ctx context.Context, job *db.BuilderJob, task *db
 			return fmt.Errorf("branch setup: %s", create.Output)
 		}
 	}
+
+	b.status(task.Title, "started", fmt.Sprintf("Branch: %s", branch))
+	b.status(task.Title, "coding", "Writing files")
 
 	docCtx, _ := BuildDocContext(ctx, b.db, task.Title+" "+task.Description, 8)
 	subtasks, _ := b.db.GetSubtasks(ctx, task.ID)
@@ -218,7 +258,18 @@ Relevant docs:
 		}
 	}
 
+	b.status(task.Title, "building", "Running go build ./...")
+	if runtime.buildOutput == "" {
+		buildResult := b.exec.Shell(ctx, fmt.Sprintf("cd %q && go build ./... 2>&1", b.exec.WorkspaceDir), 120)
+		runtime.buildOutput = buildResult.Output
+		if buildResult.IsErr {
+			return fmt.Errorf("final build failed: %s", truncateStr(buildResult.Output, 1000))
+		}
+	}
+	b.status(task.Title, "building", "go build ./... — pass")
+
 	if !runtime.testPassed {
+		b.status(task.Title, "testing", "Running go test ./... -cover")
 		result := b.exec.Shell(ctx, "cd \""+b.exec.WorkspaceDir+"\" && go test ./... -cover 2>&1", 180)
 		runtime.testOutput = result.Output
 		if result.IsErr {
@@ -226,6 +277,7 @@ Relevant docs:
 		}
 		runtime.testPassed = true
 	}
+	b.status(task.Title, "testing", "go test ./... -cover — pass")
 
 	if runtime.prURL == "" {
 		title := fmt.Sprintf("Task %d: %s", task.ID, task.Title)
@@ -253,13 +305,7 @@ Relevant docs:
 	)
 	runtime.diffSummary = truncateStr(diffResult.Output, 5000)
 
-	if runtime.buildOutput == "" {
-		buildResult := b.exec.Shell(ctx, fmt.Sprintf("cd %q && go build ./... 2>&1", b.exec.WorkspaceDir), 120)
-		runtime.buildOutput = buildResult.Output
-		if buildResult.IsErr {
-			return fmt.Errorf("final build failed: %s", truncateStr(buildResult.Output, 1000))
-		}
-	}
+	b.status(task.Title, "pr_opened", runtime.prURL)
 
 	_ = b.db.UpdateTaskPR(ctx, task.ID, runtime.prURL)
 	_ = b.db.UpdateTaskStatus(ctx, task.ID, "done")
@@ -313,9 +359,13 @@ func (b *Builder) handleToolCall(ctx context.Context, task *db.Task, tc llm.Tool
 		return "logged"
 
 	case "write_file":
+		path := strings.TrimSpace(args["path"])
+		if path != "" {
+			b.status(task.Title, "coding", fmt.Sprintf("Updating %s", path))
+		}
 		result := b.exec.Run(ctx, tc.Function.Name, tc.Function.Arguments)
 		out := result.String()
-		if strings.HasSuffix(strings.TrimSpace(args["path"]), ".go") {
+		if strings.HasSuffix(path, ".go") {
 			build := b.exec.Shell(ctx, fmt.Sprintf("cd %q && go build ./... 2>&1", b.exec.WorkspaceDir), 120)
 			rt.buildOutput = build.Output
 			if build.IsErr {
@@ -329,17 +379,28 @@ func (b *Builder) handleToolCall(ctx context.Context, task *db.Task, tc llm.Tool
 		return out
 
 	case "shell":
+		cmd := args["cmd"]
+		if strings.Contains(cmd, "go build") {
+			b.status(task.Title, "building", "Running go build ./...")
+		}
+		if strings.Contains(cmd, "go test") {
+			b.status(task.Title, "testing", "Running go test ./... -cover")
+		}
 		result := b.exec.Run(ctx, tc.Function.Name, tc.Function.Arguments)
 		out := result.String()
-		if strings.Contains(args["cmd"], "go test") {
+		if strings.Contains(cmd, "go test") {
 			rt.testOutput = out
 			if !result.IsErr {
 				rt.testPassed = true
 				out += "\ncoverage: " + extractCoverage(out)
+				b.status(task.Title, "testing", "go test ./... -cover — pass")
 			}
 		}
-		if strings.Contains(args["cmd"], "go build") {
+		if strings.Contains(cmd, "go build") {
 			rt.buildOutput = out
+			if !result.IsErr {
+				b.status(task.Title, "building", "go build ./... — pass")
+			}
 		}
 		return out
 
@@ -352,6 +413,7 @@ func (b *Builder) handleToolCall(ctx context.Context, task *db.Task, tc llm.Tool
 			if prURL != "" {
 				rt.prURL = prURL
 				rt.prNumber = prNumberFromURL(prURL)
+				b.status(task.Title, "pr_opened", prURL)
 			}
 		}
 		return out

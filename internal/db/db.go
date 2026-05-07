@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS builder_jobs (
         branch       TEXT NOT NULL DEFAULT '',
         pr_url       TEXT NOT NULL DEFAULT '',
         pr_number    INTEGER NOT NULL DEFAULT 0,
+        retry_count  INTEGER NOT NULL DEFAULT 0,
         diff_summary TEXT NOT NULL DEFAULT '',
         test_output  TEXT NOT NULL DEFAULT '',
         build_output TEXT NOT NULL DEFAULT '',
@@ -180,6 +181,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 `
 
 func (d *DB) migrate(ctx context.Context) error {
-	_, err := d.pool.Exec(ctx, schema)
-	return err
+	if _, err := d.pool.Exec(ctx, schema); err != nil {
+		return err
+	}
+	_, _ = d.pool.Exec(ctx,
+		`ALTER TABLE builder_jobs ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0`)
+	return nil
 }

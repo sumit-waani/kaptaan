@@ -28,12 +28,13 @@ RULES:
 
 // Manager handles human interaction, planning, task assignment, and PR review.
 type Manager struct {
-	db      *db.DB
-	llm     *llm.Pool
-	exec    *tools.Executor
-	send    func(string)
-	ask     func(string) string
-	builder *Builder
+	db           *db.DB
+	llm          *llm.Pool
+	exec         *tools.Executor
+	send         func(string)
+	ask          func(string) string
+	sendPRReview func(jobID int, taskTitle, prURL, note, diff string)
+	builder      *Builder
 
 	mu         sync.Mutex
 	cancelLoop context.CancelFunc
@@ -56,13 +57,15 @@ type managerPlanTask struct {
 }
 
 func NewManager(database *db.DB, pool *llm.Pool, executor *tools.Executor,
-	send func(string), ask func(string) string) *Manager {
+	send func(string), ask func(string) string,
+	sendPRReview func(jobID int, taskTitle, prURL, note, diff string)) *Manager {
 	return &Manager{
-		db:   database,
-		llm:  pool,
-		exec: executor,
-		send: send,
-		ask:  ask,
+		db:           database,
+		llm:          pool,
+		exec:         executor,
+		send:         send,
+		ask:          ask,
+		sendPRReview: sendPRReview,
 	}
 }
 
@@ -332,13 +335,7 @@ func (m *Manager) runExecuting(ctx context.Context) error {
 	}
 }
 
-// reviewAndPresent: manager LLM reviews diff+test output, asks human for merge approval.
-func (m *Manager) reviewAndPresent(ctx context.Context, job *db.BuilderJob) error {
-	task, err := m.db.GetTask(ctx, job.TaskID)
-	if err != nil {
-		return err
-	}
-
+func (m *Manager) generateReviewNote(ctx context.Context, task *db.Task, job *db.BuilderJob) (string, error) {
 	reviewPrompt := fmt.Sprintf(`Review this builder submission briefly.
 Task: %s
 Description: %s
@@ -360,46 +357,64 @@ Respond with 3-5 short lines covering quality, risks, and readiness.`,
 		truncateStr(job.TestOutput, 1200),
 	)
 
-	note := "Review unavailable; please inspect the PR manually."
 	resp, err := m.llm.Chat(ctx, []llm.Message{
 		{Role: "system", Content: managerSystemPrompt},
 		{Role: "user", Content: reviewPrompt},
 	}, nil)
-	if err == nil && len(resp.Choices) > 0 && strings.TrimSpace(resp.Choices[0].Message.Content) != "" {
-		note = strings.TrimSpace(resp.Choices[0].Message.Content)
+	if err != nil {
+		return "", err
+	}
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("empty review response")
+	}
+
+	note := strings.TrimSpace(resp.Choices[0].Message.Content)
+	if note == "" {
+		return "", fmt.Errorf("empty review note")
+	}
+	return note, nil
+}
+
+// reviewAndPresent: manager LLM reviews diff+test output, asks human for merge approval.
+func (m *Manager) reviewAndPresent(ctx context.Context, job *db.BuilderJob) error {
+	task, err := m.db.GetTask(ctx, job.TaskID)
+	if err != nil {
+		return err
+	}
+
+	note, err := m.generateReviewNote(ctx, task, job)
+	if err != nil {
+		note = "Unable to generate review note."
 	}
 
 	_ = m.db.SaveManagerNote(ctx, job.ID, note)
 	_ = m.db.LogEvent(ctx, task.ID, "manager_review", truncateStr(note, 500))
 
-	question := fmt.Sprintf("🧾 PR ready for review\n\nTask: %s\nPR: %s\n\nDiff summary:\n%s\n\nManager note:\n%s\n\nApprove merge? (yes/no)",
-		task.Title,
-		job.PRURL,
-		truncateStr(job.DiffSummary, 1200),
-		note,
-	)
+	if m.sendPRReview != nil {
+		m.sendPRReview(job.ID, task.Title, job.PRURL, note, truncateStr(job.DiffSummary, 5000))
+	}
 
-	if isYes(m.ask(question)) {
-		if job.PRNumber <= 0 {
-			m.send("⚠️ Cannot merge: missing PR number.")
-			return nil
-		}
+	answer := m.ask(fmt.Sprintf(
+		"PR ready: %s\n\nManager note: %s\n\nApprove merge? (yes / no)",
+		job.PRURL,
+		note,
+	))
+
+	if isYes(answer) {
 		result := m.exec.GithubOp(ctx, "merge_pr", fmt.Sprintf("%d", job.PRNumber))
 		if result.IsErr {
-			m.send("⚠️ Merge failed. Please review manually: " + truncateStr(result.Output, 400))
-			_ = m.db.LogEvent(ctx, task.ID, "merge_failed", truncateStr(result.Output, 400))
-			return nil
+			m.send(fmt.Sprintf("❌ Merge failed: %s", result.Output))
+			return fmt.Errorf("merge failed: %s", result.Output)
 		}
-		_ = m.db.UpdateTaskStatus(ctx, task.ID, "done")
-		_ = m.db.LogEvent(ctx, task.ID, "merged", fmt.Sprintf("pr=%d", job.PRNumber))
-		m.send(fmt.Sprintf("✅ Merged PR #%d for task: %s", job.PRNumber, task.Title))
+		_ = m.db.UpdateTaskStatus(ctx, job.TaskID, "done")
+		_ = m.db.LogEvent(ctx, job.TaskID, "merged", job.PRURL)
+		m.send(fmt.Sprintf("✅ Merged: %s", job.PRURL))
 		return nil
 	}
 
-	_ = m.db.UpdateBuilderJob(ctx, job.ID, "rejected", job.PRURL, job.PRNumber, job.DiffSummary, job.TestOutput, job.BuildOutput)
-	_ = m.db.UpdateTaskStatus(ctx, task.ID, "rejected")
-	_ = m.db.LogEvent(ctx, task.ID, "merge_rejected", fmt.Sprintf("pr=%d", job.PRNumber))
-	m.send(fmt.Sprintf("⏭ PR not approved for task: %s", task.Title))
+	_ = m.db.UpdateBuilderJobStatus(ctx, job.ID, "rejected")
+	_ = m.db.UpdateTaskStatus(ctx, job.TaskID, "rejected")
+	m.send("❌ PR rejected by founder. Task marked for retry.")
 	return nil
 }
 
