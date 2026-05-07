@@ -1,0 +1,35 @@
+modules = ["go-1.21"]
+[agent]
+expertMode = true
+stack = "BEST_EFFORT_FALLBACK"
+
+[nix]
+channel = "stable-25_05"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "./kaptaan"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[deployment]
+deploymentTarget = "vm"
+run = ["./kaptaan"]
+build = ["go", "build", "-o", "kaptaan", "./cmd/kaptaan"]
