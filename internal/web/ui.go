@@ -261,16 +261,20 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 /* ─── Feed ──────────────────────────────────────────────────────────────── */
 .feed {
   flex: 1;
+  min-height: 0;        /* critical: lets flex child shrink & scroll */
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
-  padding: 16px calc(var(--safe-l) + 14px) 10px calc(var(--safe-r) + 14px);
+  padding: 0 calc(var(--safe-l) + 14px) 10px calc(var(--safe-r) + 14px);
   display: flex;
   flex-direction: column;
   gap: 10px;
   scrollbar-width: none;
 }
 .feed::-webkit-scrollbar { display: none; }
+
+/* pushes messages to the bottom when content is shorter than the feed */
+.feed-spacer { flex: 1 1 0; min-height: 16px; }
 
 .empty-state {
   flex: 1;
@@ -280,7 +284,6 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
   justify-content: center;
   gap: 12px;
   color: var(--dim);
-  padding: 40px 0;
 }
 .empty-state svg { opacity: 0.3; }
 .empty-state p { font-size: 12px; text-align: center; }
@@ -739,6 +742,11 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
             </svg>
             <p>send a message to start.</p>
           </div>
+        </template>
+        <!-- spacer: expands when content is short to push messages to the bottom;
+             shrinks to nothing when content overflows so scrolling takes over -->
+        <template x-if="messages.length > 0">
+          <div class="feed-spacer"></div>
         </template>
         <template x-for="(m, i) in messages" :key="i">
           <div class="bubble-row" :class="m.type === 'user' || m.type === 'reply' ? 'user' : 'agent'">
