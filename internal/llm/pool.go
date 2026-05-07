@@ -86,7 +86,7 @@ func New(cfg Config, onUsage func(UsageRecord)) *Pool {
         if cfg.NIMKey1 != "" {
                 providers = append(providers,
                         &provider{name: "nim1-deepseek", url: nimURL,
-                                model: "deepseek-ai/deepseek-r1", key: cfg.NIMKey1, isPaid: false},
+                                model: "deepseek-ai/deepseek-v4-pro", key: cfg.NIMKey1, isPaid: false},
                         &provider{name: "nim1-glm", url: nimURL,
                                 model: "z-ai/glm-5.1", key: cfg.NIMKey1, isPaid: false},
                 )
@@ -94,7 +94,7 @@ func New(cfg Config, onUsage func(UsageRecord)) *Pool {
         if cfg.NIMKey2 != "" {
                 providers = append(providers,
                         &provider{name: "nim2-deepseek", url: nimURL,
-                                model: "deepseek-ai/deepseek-r1", key: cfg.NIMKey2, isPaid: false},
+                                model: "deepseek-ai/deepseek-v4-pro", key: cfg.NIMKey2, isPaid: false},
                         &provider{name: "nim2-glm", url: nimURL,
                                 model: "z-ai/glm-5.1", key: cfg.NIMKey2, isPaid: false},
                 )
@@ -104,9 +104,7 @@ func New(cfg Config, onUsage func(UsageRecord)) *Pool {
         if cfg.DeepSeekKey != "" {
                 providers = append(providers,
                         &provider{name: "deepseek-pro", url: deepseekURL,
-                                model: "deepseek-chat", key: cfg.DeepSeekKey, isPaid: true},
-                        &provider{name: "deepseek-flash", url: deepseekURL,
-                                model: "deepseek-chat", key: cfg.DeepSeekKey, isPaid: true},
+                                model: "deepseek-v4-pro", key: cfg.DeepSeekKey, isPaid: true},
                 )
         }
 
