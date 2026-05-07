@@ -65,6 +65,15 @@ func main() {
         githubRepo := os.Getenv("GITHUB_REPO")
         githubToken := os.Getenv("GITHUB_TOKEN")
         managerExec := tools.NewNoopExecutor(githubRepo, githubToken)
+        // Resolve repo+token at every Manager merge_pr — uses the active project's
+        // values when set, else falls back to env (the static fields).
+        managerExec.Resolver = func(ctx context.Context) (string, string, error) {
+                proj, err := database.GetActiveProject(ctx)
+                if err != nil || proj == nil {
+                        return "", "", err
+                }
+                return proj.RepoURL, proj.GithubToken, nil
+        }
 
         // ── Builder config (per-job E2B sandbox) ────────────────────────────
         builderCfg := agent.BuilderConfig{

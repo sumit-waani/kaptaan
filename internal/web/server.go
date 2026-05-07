@@ -25,6 +25,7 @@ type Agent interface {
         Resume(ctx context.Context)
         IngestDoc(ctx context.Context, filename, content string) (int, error)
         GetStatus(ctx context.Context) (string, float64)
+        SetNotifyBuilderState(fn func())
 }
 
 // ─── SSE hub ───────────────────────────────────────────────────────────────
@@ -91,7 +92,21 @@ func New(database *db.DB) *Server {
 }
 
 // SetAgent wires the agent after construction (breaks init cycle).
-func (s *Server) SetAgent(a Agent) { s.agent = a }
+func (s *Server) SetAgent(a Agent) {
+        s.agent = a
+        a.SetNotifyBuilderState(func() {
+                s.BroadcastBuilderState(context.Background())
+        })
+}
+
+// BroadcastBuilderState pushes a fresh builder_state event to all SSE clients.
+func (s *Server) BroadcastBuilderState(ctx context.Context) {
+        payload, err := s.buildBuilderStateJSON(ctx)
+        if err != nil {
+                return
+        }
+        s.hub.broadcast("event: builder_state\ndata: " + payload + "\n\n")
+}
 
 // SetMOTD sets a message-of-the-day that is pushed to each new SSE client on connect.
 func (s *Server) SetMOTD(msg string) {
@@ -232,6 +247,9 @@ func (s *Server) Start(ctx context.Context) {
         mux.HandleFunc("/api/docs/", s.requireAuth(s.handleDocByID))
         mux.HandleFunc("/api/builder", s.requireAuth(s.handleBuilder))
         mux.HandleFunc("/api/trace", s.requireAuth(s.handleTrace))
+        mux.HandleFunc("/api/projects", s.requireAuth(s.handleProjects))
+        mux.HandleFunc("/api/projects/", s.requireAuth(s.handleProjectByID))
+        mux.HandleFunc("/api/builder/state", s.requireAuth(s.handleBuilderState))
 
         srv := &http.Server{
                 Addr:    "0.0.0.0:5000",

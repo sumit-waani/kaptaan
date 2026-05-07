@@ -250,6 +250,7 @@ const rawHTML = `<!DOCTYPE html>
 
       <div class="nav-tabs">
         <button class="nav-tab" :class="view==='chat'?'active':''" @click="view='chat'">Chat</button>
+        <button class="nav-tab" :class="view==='builder'?'active':''" @click="view='builder'; loadBuilderState()">Builder</button>
         <button class="nav-tab" :class="view==='settings'?'active':''" @click="view='settings'; loadSettings()">Settings</button>
       </div>
 
@@ -300,8 +301,154 @@ const rawHTML = `<!DOCTYPE html>
       </div>
     </main>
 
+    <!-- Builder view -->
+    <main x-show="view==='builder'" class="settings-view">
+
+      <section class="settings-section">
+        <h2>Running task
+          <span style="font-family: var(--sans); font-weight: 400; color: var(--text3); text-transform: none; letter-spacing: 0; font-size: 11px; margin-left: 6px;">
+            (live — auto-updates as the Builder works)
+          </span>
+        </h2>
+        <div class="settings-card">
+          <template x-if="!builderState.running">
+            <div class="empty">No task is currently running. Queued and recent jobs are below.</div>
+          </template>
+          <template x-if="builderState.running">
+            <div>
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px;">
+                <div style="font-weight:600; font-size:15px;" x-text="builderState.running.task_title"></div>
+                <span class="job-status running">running</span>
+              </div>
+              <div class="meta" style="font-family: var(--mono); font-size:11px; color: var(--text3); margin-bottom: 10px;">
+                <span x-text="'job #' + builderState.running.job_id"></span>
+                <span> · </span>
+                <span x-text="builderState.running.branch || '(no branch yet)'"></span>
+                <template x-if="builderState.running.started_at">
+                  <span> · started <span x-text="builderState.running.started_at"></span></span>
+                </template>
+              </div>
+              <template x-if="builderState.running.task_desc">
+                <div class="desc" x-text="builderState.running.task_desc"></div>
+              </template>
+
+              <template x-if="builderState.running.subtasks && builderState.running.subtasks.length">
+                <div style="margin-top:8px;">
+                  <div style="font-family: var(--mono); font-size:11px; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom:6px;">Subtasks</div>
+                  <template x-for="st in builderState.running.subtasks" :key="st.id">
+                    <div class="settings-row" style="padding: 6px 0;">
+                      <div class="row-main"><div class="name" x-text="st.title"></div></div>
+                      <span :class="'job-status ' + st.status" x-text="(st.status||'').replace('_',' ')"></span>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <div style="margin-top:12px;">
+                <div style="font-family: var(--mono); font-size:11px; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom:6px;">Milestones</div>
+                <template x-if="!builderState.running.milestones || !builderState.running.milestones.length">
+                  <div class="empty">No milestones yet.</div>
+                </template>
+                <pre class="console" style="max-height: 280px;" x-show="builderState.running.milestones && builderState.running.milestones.length"
+                  x-text="builderState.running.milestones.map(m => '[' + m.time + '] ' + m.event + ' — ' + m.payload).join('\n')"></pre>
+              </div>
+            </div>
+          </template>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2>Queue</h2>
+        <div class="settings-card">
+          <template x-if="!builderState.queue || !builderState.queue.length">
+            <div class="empty">Queue is empty.</div>
+          </template>
+          <template x-for="q in (builderState.queue || [])" :key="q.job_id">
+            <div class="settings-row">
+              <div class="row-main">
+                <div class="name" x-text="q.task_title"></div>
+                <div class="meta">job #<span x-text="q.job_id"></span> · <span x-text="q.branch || '(no branch)'"></span></div>
+              </div>
+              <span class="job-status queued">queued</span>
+            </div>
+          </template>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2>Recent</h2>
+        <div class="settings-card">
+          <div style="display:flex; gap:8px; margin-bottom:10px;">
+            <button class="settings-action" @click="loadBuilderState()">Refresh</button>
+            <span style="font-family: var(--mono); font-size:11px; color: var(--text3); align-self:center;"
+              x-text="builderState.updated ? ('updated ' + builderState.updated) : ''"></span>
+          </div>
+          <template x-if="!builderState.recent || !builderState.recent.length">
+            <div class="empty">No recent jobs.</div>
+          </template>
+          <template x-for="r in (builderState.recent || [])" :key="r.job_id">
+            <div class="settings-row">
+              <div class="row-main">
+                <div class="name" x-text="r.task_title"></div>
+                <div class="meta">job #<span x-text="r.job_id"></span> · <span x-text="r.branch || '(no branch)'"></span></div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </section>
+
+    </main>
+
     <!-- Settings view -->
     <main x-show="view==='settings'" class="settings-view">
+
+      <section class="settings-section">
+        <h2>Projects
+          <span style="font-family: var(--sans); font-weight: 400; color: var(--text3); text-transform: none; letter-spacing: 0; font-size: 11px; margin-left: 6px;">
+            (each project has its own repo, token, chat history and tasks)
+          </span>
+        </h2>
+        <div class="settings-card">
+          <template x-if="projects.length===0">
+            <div class="empty">Loading projects…</div>
+          </template>
+          <template x-for="p in projects" :key="p.id">
+            <div style="border-bottom: 1px solid var(--line); padding: 10px 0;">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+                <div style="font-weight:600;" x-text="p.name + (p.active ? '  ★ active' : '')"></div>
+                <div style="display:flex; gap:6px;">
+                  <button class="settings-action" x-show="!p.active" @click="activateProject(p)">Switch</button>
+                  <button class="settings-action" @click="editProject(p)">Edit</button>
+                  <button class="settings-action danger" @click="clearProject(p)">Clear data</button>
+                  <button class="settings-action danger" @click="deleteProject(p)">Delete</button>
+                </div>
+              </div>
+              <div class="meta" style="font-family: var(--mono); font-size:11px; color: var(--text3); margin-top:4px;">
+                <span x-text="'#' + p.id"></span>
+                <span> · </span>
+                <span x-text="p.repo_url || '(no repo set)'"></span>
+                <span> · </span>
+                <span x-text="p.has_token ? ('token ' + p.github_token) : 'no token'"></span>
+              </div>
+            </div>
+          </template>
+
+          <div style="margin-top: 14px;">
+            <div style="font-family: var(--mono); font-size:11px; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom:6px;">
+              Add new project
+            </div>
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              <input class="hdr-btn" style="padding:9px 12px;" placeholder="Name (e.g. acme-api)" x-model="newProj.name"/>
+              <input class="hdr-btn" style="padding:9px 12px;" placeholder="GitHub repo (owner/name)" x-model="newProj.repo_url"/>
+              <input class="hdr-btn" style="padding:9px 12px;" type="password" placeholder="GitHub token (optional)" x-model="newProj.github_token"/>
+              <label style="font-size:12px; color: var(--text2); display:flex; gap:6px; align-items:center; cursor:pointer;">
+                <input type="checkbox" x-model="newProj.activate"/> Switch to it after creating
+              </label>
+              <button class="settings-action primary" :disabled="!newProj.name.trim()" @click="addProject()">Create project</button>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <section class="settings-section">
         <h2>Project documents</h2>
@@ -442,6 +589,10 @@ function kaptaan() {
     _traceTimer: null,
     uploading:  false,
 
+    projects:     [],
+    newProj:      { name: '', repo_url: '', github_token: '', activate: true },
+    builderState: { running: null, queue: [], recent: [], updated: '' },
+
     async init() {
       try {
         const r = await fetch('/api/auth/status');
@@ -510,6 +661,12 @@ function kaptaan() {
 
       es.addEventListener('history_end', () => { this.scrollBottom(); });
 
+      es.addEventListener('builder_state', e => {
+        try {
+          this.builderState = JSON.parse(e.data);
+        } catch {}
+      });
+
       es.addEventListener('ask_done', () => {
         if (this.view === 'settings') this.loadTrace();
       });
@@ -569,7 +726,94 @@ function kaptaan() {
     },
 
     async loadSettings() {
-      this.loadDocs(); this.loadBuilder(); this.loadLogs(); this.loadUsage(); this.loadTrace();
+      this.loadDocs(); this.loadBuilder(); this.loadLogs(); this.loadUsage(); this.loadTrace(); this.loadProjects();
+    },
+
+    async loadBuilderState() {
+      try {
+        const r = await fetch('/api/builder/state');
+        if (!r.ok) return;
+        this.builderState = await r.json();
+      } catch {}
+    },
+
+    async loadProjects() {
+      try {
+        const r = await fetch('/api/projects');
+        if (!r.ok) return;
+        const d = await r.json();
+        this.projects = d.projects || [];
+      } catch {}
+    },
+
+    async addProject() {
+      const name = (this.newProj.name || '').trim();
+      if (!name) return;
+      const r = await fetch('/api/projects', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          repo_url: (this.newProj.repo_url || '').trim(),
+          github_token: (this.newProj.github_token || '').trim(),
+          activate: !!this.newProj.activate,
+        }),
+      });
+      if (r.ok) {
+        this.newProj = { name: '', repo_url: '', github_token: '', activate: true };
+        await this.loadProjects();
+      } else {
+        const d = await r.json().catch(() => ({}));
+        alert(d.error || 'Could not create project');
+      }
+    },
+
+    async activateProject(p) {
+      const r = await fetch('/api/projects/' + p.id + '/activate', { method: 'POST' });
+      if (r.ok) {
+        this.messages = [];
+        await this.loadProjects();
+        await this.loadBuilderState();
+      }
+    },
+
+    async editProject(p) {
+      const repo = prompt('GitHub repo (owner/name) for "' + p.name + '":', p.repo_url || '');
+      if (repo === null) return;
+      const tokenIn = prompt('GitHub token (leave blank to keep existing, "-" to clear):', '');
+      if (tokenIn === null) return;
+      const body = { name: p.name, repo_url: repo.trim() };
+      if (tokenIn.trim() !== '') {
+        body.github_token = tokenIn.trim() === '-' ? '' : tokenIn.trim();
+      }
+      const r = await fetch('/api/projects/' + p.id, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (r.ok) await this.loadProjects();
+      else alert('Update failed');
+    },
+
+    async clearProject(p) {
+      if (!confirm('Wipe ALL data (chats, plans, jobs, docs) for "' + p.name + '"? Project itself stays.')) return;
+      const r = await fetch('/api/projects/' + p.id + '/clear', { method: 'POST' });
+      if (r.ok) {
+        if (p.active) this.messages = [];
+        await this.loadProjects();
+        await this.loadBuilderState();
+      }
+    },
+
+    async deleteProject(p) {
+      if (!confirm('Permanently delete project "' + p.name + '" and all its data?')) return;
+      const r = await fetch('/api/projects/' + p.id, { method: 'DELETE' });
+      if (r.ok) {
+        if (p.active) this.messages = [];
+        await this.loadProjects();
+        await this.loadBuilderState();
+      } else {
+        const d = await r.json().catch(() => ({}));
+        alert(d.error || 'Could not delete project');
+      }
     },
 
     async loadTrace() {

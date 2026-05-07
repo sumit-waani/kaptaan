@@ -8,12 +8,14 @@ import (
 // ─── Models ────────────────────────────────────────────────────────────────
 
 type Project struct {
-        ID         int
-        Name       string
-        Status     string
-        TrustScore float64
-        CreatedAt  time.Time
-        UpdatedAt  time.Time
+        ID          int
+        Name        string
+        Status      string
+        TrustScore  float64
+        RepoURL     string
+        GithubToken string
+        CreatedAt   time.Time
+        UpdatedAt   time.Time
 }
 
 type ProjectDoc struct {
@@ -99,38 +101,27 @@ type AgentTrace struct {
 
 // ─── Project ───────────────────────────────────────────────────────────────
 
+// GetProject returns the active project (the one currently selected via KV).
 func (d *DB) GetProject(ctx context.Context) (*Project, error) {
-        row := d.pool.QueryRow(ctx,
-                `SELECT id, name, status, trust_score, created_at, updated_at
-                 FROM project ORDER BY id LIMIT 1`)
-        p := &Project{}
-        err := row.Scan(&p.ID, &p.Name, &p.Status, &p.TrustScore, &p.CreatedAt, &p.UpdatedAt)
-        if err != nil {
-                return nil, err
-        }
-        return p, nil
+        return d.GetActiveProject(ctx)
 }
 
+// CreateProject inserts a project with just a name. Prefer CreateProjectFull.
 func (d *DB) CreateProject(ctx context.Context, name string) (*Project, error) {
-        row := d.pool.QueryRow(ctx,
-                `INSERT INTO project(name) VALUES($1)
-                 RETURNING id, name, status, trust_score, created_at, updated_at`, name)
-        p := &Project{}
-        err := row.Scan(&p.ID, &p.Name, &p.Status, &p.TrustScore, &p.CreatedAt, &p.UpdatedAt)
-        return p, err
+        return d.CreateProjectFull(ctx, name, "", "")
 }
 
 func (d *DB) UpdateProjectStatus(ctx context.Context, status string) error {
         _, err := d.pool.Exec(ctx,
-                `UPDATE project SET status=$1, updated_at=NOW() WHERE id=(SELECT id FROM project LIMIT 1)`,
-                status)
+                `UPDATE project SET status=$1, updated_at=NOW() WHERE id=$2`,
+                status, d.ActiveProjectID(ctx))
         return err
 }
 
 func (d *DB) UpdateProjectTrustScore(ctx context.Context, score float64) error {
         _, err := d.pool.Exec(ctx,
-                `UPDATE project SET trust_score=$1, updated_at=NOW() WHERE id=(SELECT id FROM project LIMIT 1)`,
-                score)
+                `UPDATE project SET trust_score=$1, updated_at=NOW() WHERE id=$2`,
+                score, d.ActiveProjectID(ctx))
         return err
 }
 
@@ -139,25 +130,26 @@ func (d *DB) UpdateProjectTrustScore(ctx context.Context, score float64) error {
 func (d *DB) SaveDoc(ctx context.Context, filename, content string) (int, error) {
         var id int
         err := d.pool.QueryRow(ctx,
-                `INSERT INTO project_docs(filename, raw_content) VALUES($1,$2) RETURNING id`,
-                filename, content).Scan(&id)
+                `INSERT INTO project_docs(project_id, filename, raw_content) VALUES($1,$2,$3) RETURNING id`,
+                d.ActiveProjectID(ctx), filename, content).Scan(&id)
         return id, err
 }
 
 func (d *DB) SaveDocChunk(ctx context.Context, docID int, text string, tags []string, relevance string) error {
         _, err := d.pool.Exec(ctx,
-                `INSERT INTO doc_chunks(doc_id, chunk_text, tags, relevance) VALUES($1,$2,$3,$4)`,
-                docID, text, tags, relevance)
+                `INSERT INTO doc_chunks(project_id, doc_id, chunk_text, tags, relevance) VALUES($1,$2,$3,$4,$5)`,
+                d.ActiveProjectID(ctx), docID, text, tags, relevance)
         return err
 }
 
 func (d *DB) SearchDocChunks(ctx context.Context, tags []string, limit int) ([]DocChunk, error) {
+        pid := d.ActiveProjectID(ctx)
         // Try tag-overlap search first.
         rows, err := d.pool.Query(ctx,
                 `SELECT id, doc_id, chunk_text, tags, relevance FROM doc_chunks
-                 WHERE tags && $1
+                 WHERE project_id=$3 AND tags && $1
                  ORDER BY created_at DESC LIMIT $2`,
-                tags, limit)
+                tags, limit, pid)
         if err != nil {
                 return nil, err
         }
@@ -181,7 +173,8 @@ func (d *DB) SearchDocChunks(ctx context.Context, tags []string, limit int) ([]D
         if len(chunks) == 0 {
                 fbRows, err := d.pool.Query(ctx,
                         `SELECT id, doc_id, chunk_text, tags, relevance FROM doc_chunks
-                         ORDER BY created_at DESC LIMIT $1`, limit)
+                         WHERE project_id=$2
+                         ORDER BY created_at DESC LIMIT $1`, limit, pid)
                 if err != nil {
                         return nil, err
                 }
@@ -201,7 +194,8 @@ func (d *DB) SearchDocChunks(ctx context.Context, tags []string, limit int) ([]D
 
 func (d *DB) GetAllDocChunks(ctx context.Context) ([]DocChunk, error) {
         rows, err := d.pool.Query(ctx,
-                `SELECT id, doc_id, chunk_text, tags, relevance FROM doc_chunks ORDER BY doc_id, id`)
+                `SELECT id, doc_id, chunk_text, tags, relevance FROM doc_chunks
+                 WHERE project_id=$1 ORDER BY doc_id, id`, d.ActiveProjectID(ctx))
         if err != nil {
                 return nil, err
         }
@@ -220,19 +214,26 @@ func (d *DB) GetAllDocChunks(ctx context.Context) ([]DocChunk, error) {
 
 func (d *DB) CountDocChunks(ctx context.Context) (int, error) {
         var n int
-        err := d.pool.QueryRow(ctx, `SELECT COUNT(*) FROM doc_chunks`).Scan(&n)
+        err := d.pool.QueryRow(ctx,
+                `SELECT COUNT(*) FROM doc_chunks WHERE project_id=$1`,
+                d.ActiveProjectID(ctx)).Scan(&n)
         return n, err
 }
 
-// DeleteDoc removes a project doc; chunks are cascade-deleted via FK.
+// DeleteDoc removes a project doc (scoped to the active project); chunks
+// are cascade-deleted via FK.
 func (d *DB) DeleteDoc(ctx context.Context, id int) error {
-        _, err := d.pool.Exec(ctx, `DELETE FROM project_docs WHERE id = $1`, id)
+        _, err := d.pool.Exec(ctx,
+                `DELETE FROM project_docs WHERE id=$1 AND project_id=$2`,
+                id, d.ActiveProjectID(ctx))
         return err
 }
 
 func (d *DB) ListDocs(ctx context.Context) ([]ProjectDoc, error) {
         rows, err := d.pool.Query(ctx,
-                `SELECT id, filename, created_at FROM project_docs ORDER BY created_at DESC`)
+                `SELECT id, filename, created_at FROM project_docs
+                 WHERE project_id=$1 ORDER BY created_at DESC`,
+                d.ActiveProjectID(ctx))
         if err != nil {
                 return nil, err
         }
@@ -251,12 +252,15 @@ func (d *DB) ListDocs(ctx context.Context) ([]ProjectDoc, error) {
 // ─── Plans ─────────────────────────────────────────────────────────────────
 
 func (d *DB) CreatePlan(ctx context.Context) (*Plan, error) {
+        pid := d.ActiveProjectID(ctx)
         var maxVersion int
-        d.pool.QueryRow(ctx, `SELECT COALESCE(MAX(version),0) FROM plans`).Scan(&maxVersion)
+        d.pool.QueryRow(ctx,
+                `SELECT COALESCE(MAX(version),0) FROM plans WHERE project_id=$1`, pid).Scan(&maxVersion)
 
         row := d.pool.QueryRow(ctx,
-                `INSERT INTO plans(version) VALUES($1) RETURNING id, version, status, created_at`,
-                maxVersion+1)
+                `INSERT INTO plans(project_id, version) VALUES($1,$2)
+                 RETURNING id, version, status, created_at`,
+                pid, maxVersion+1)
         p := &Plan{}
         err := row.Scan(&p.ID, &p.Version, &p.Status, &p.CreatedAt)
         return p, err
@@ -264,7 +268,9 @@ func (d *DB) CreatePlan(ctx context.Context) (*Plan, error) {
 
 func (d *DB) GetActivePlan(ctx context.Context) (*Plan, error) {
         row := d.pool.QueryRow(ctx,
-                `SELECT id, version, status, created_at FROM plans WHERE status='active' ORDER BY id DESC LIMIT 1`)
+                `SELECT id, version, status, created_at FROM plans
+                 WHERE status='active' AND project_id=$1 ORDER BY id DESC LIMIT 1`,
+                d.ActiveProjectID(ctx))
         p := &Plan{}
         err := row.Scan(&p.ID, &p.Version, &p.Status, &p.CreatedAt)
         if err != nil {
@@ -350,9 +356,22 @@ func (d *DB) GetNextPendingSubtask(ctx context.Context, parentID int) (*Task, er
 // ─── Task Log ──────────────────────────────────────────────────────────────
 
 func (d *DB) LogEvent(ctx context.Context, taskID int, event, payload string) error {
+        // Derive project_id from the task itself so milestones never get
+        // attributed to whichever project happens to be "active" mid-run.
+        // Falls back to the current active project only if the lookup fails
+        // (e.g. taskID==0 for very early bootstrap events).
+        pid := d.ActiveProjectID(ctx)
+        if taskID > 0 {
+                var tpid int
+                if err := d.pool.QueryRow(ctx,
+                        `SELECT p.project_id FROM tasks t JOIN plans p ON p.id=t.plan_id WHERE t.id=$1`,
+                        taskID).Scan(&tpid); err == nil && tpid > 0 {
+                        pid = tpid
+                }
+        }
         _, err := d.pool.Exec(ctx,
-                `INSERT INTO task_log(task_id, event, payload) VALUES($1,$2,$3)`,
-                taskID, event, payload)
+                `INSERT INTO task_log(project_id, task_id, event, payload) VALUES($1,$2,$3,$4)`,
+                pid, taskID, event, payload)
         return err
 }
 
@@ -379,7 +398,8 @@ func (d *DB) GetRecentLogs(ctx context.Context, taskID, limit int) ([]TaskLog, e
 func (d *DB) GetGlobalRecentLogs(ctx context.Context, limit int) ([]TaskLog, error) {
         rows, err := d.pool.Query(ctx,
                 `SELECT id, task_id, event, payload, created_at
-                 FROM task_log ORDER BY id DESC LIMIT $1`, limit)
+                 FROM task_log WHERE project_id=$2 ORDER BY id DESC LIMIT $1`,
+                limit, d.ActiveProjectID(ctx))
         if err != nil {
                 return nil, err
         }
@@ -400,7 +420,8 @@ func (d *DB) GetGlobalRecentLogs(ctx context.Context, limit int) ([]TaskLog, err
 func (d *DB) CreateClarification(ctx context.Context, question string) (int, error) {
         var id int
         err := d.pool.QueryRow(ctx,
-                `INSERT INTO clarifications(question) VALUES($1) RETURNING id`, question).Scan(&id)
+                `INSERT INTO clarifications(project_id, question) VALUES($1,$2) RETURNING id`,
+                d.ActiveProjectID(ctx), question).Scan(&id)
         return id, err
 }
 
@@ -413,7 +434,9 @@ func (d *DB) AnswerClarification(ctx context.Context, id int, answer string) err
 func (d *DB) GetUnansweredClarification(ctx context.Context) (*Clarification, error) {
         row := d.pool.QueryRow(ctx,
                 `SELECT id, question, answer, answered_at, created_at
-                 FROM clarifications WHERE answered_at IS NULL ORDER BY id LIMIT 1`)
+                 FROM clarifications
+                 WHERE answered_at IS NULL AND project_id=$1
+                 ORDER BY id LIMIT 1`, d.ActiveProjectID(ctx))
         c := &Clarification{}
         err := row.Scan(&c.ID, &c.Question, &c.Answer, &c.AnsweredAt, &c.CreatedAt)
         if err != nil {
@@ -425,7 +448,8 @@ func (d *DB) GetUnansweredClarification(ctx context.Context) (*Clarification, er
 func (d *DB) GetAllClarifications(ctx context.Context) ([]Clarification, error) {
         rows, err := d.pool.Query(ctx,
                 `SELECT id, question, answer, answered_at, created_at
-                 FROM clarifications ORDER BY id`)
+                 FROM clarifications WHERE project_id=$1 ORDER BY id`,
+                d.ActiveProjectID(ctx))
         if err != nil {
                 return nil, err
         }
@@ -442,8 +466,9 @@ func (d *DB) GetAllClarifications(ctx context.Context) ([]Clarification, error) 
 }
 
 func (d *DB) CountClarifications(ctx context.Context) (total, answered int, err error) {
-        err = d.pool.QueryRow(ctx, `SELECT COUNT(*), COUNT(answered_at) FROM clarifications`).
-                Scan(&total, &answered)
+        err = d.pool.QueryRow(ctx,
+                `SELECT COUNT(*), COUNT(answered_at) FROM clarifications WHERE project_id=$1`,
+                d.ActiveProjectID(ctx)).Scan(&total, &answered)
         return
 }
 
@@ -452,8 +477,8 @@ func (d *DB) CountClarifications(ctx context.Context) (total, answered int, err 
 func (d *DB) CreateSuggestion(ctx context.Context, title, desc, taskPlan string) (int, error) {
         var id int
         err := d.pool.QueryRow(ctx,
-                `INSERT INTO suggestions(title,description,task_plan) VALUES($1,$2,$3) RETURNING id`,
-                title, desc, taskPlan).Scan(&id)
+                `INSERT INTO suggestions(project_id,title,description,task_plan) VALUES($1,$2,$3,$4) RETURNING id`,
+                d.ActiveProjectID(ctx), title, desc, taskPlan).Scan(&id)
         return id, err
 }
 
@@ -466,7 +491,8 @@ func (d *DB) UpdateSuggestionStatus(ctx context.Context, id int, status string) 
 func (d *DB) GetPendingSuggestion(ctx context.Context) (*Suggestion, error) {
         row := d.pool.QueryRow(ctx,
                 `SELECT id, title, description, task_plan, status, created_at, updated_at
-                 FROM suggestions WHERE status='pending' ORDER BY id LIMIT 1`)
+                 FROM suggestions WHERE status='pending' AND project_id=$1 ORDER BY id LIMIT 1`,
+                d.ActiveProjectID(ctx))
         s := &Suggestion{}
         err := row.Scan(&s.ID, &s.Title, &s.Description, &s.TaskPlan, &s.Status, &s.CreatedAt, &s.UpdatedAt)
         if err != nil {
@@ -503,15 +529,17 @@ func (d *DB) KVGetDefault(ctx context.Context, key, def string) string {
 
 func (d *DB) AddMessage(ctx context.Context, role, content string) error {
         _, err := d.pool.Exec(ctx,
-                `INSERT INTO messages(role,content) VALUES($1,$2)`, role, content)
+                `INSERT INTO messages(project_id,role,content) VALUES($1,$2,$3)`,
+                d.ActiveProjectID(ctx), role, content)
         return err
 }
 
 func (d *DB) GetHistory(ctx context.Context, limit int) ([]struct{ Role, Content string }, error) {
         rows, err := d.pool.Query(ctx,
                 `SELECT role, content FROM (
-                        SELECT role, content, id FROM messages ORDER BY id DESC LIMIT $1
-                ) sub ORDER BY id ASC`, limit)
+                        SELECT role, content, id FROM messages
+                        WHERE project_id=$2 ORDER BY id DESC LIMIT $1
+                ) sub ORDER BY id ASC`, limit, d.ActiveProjectID(ctx))
         if err != nil {
                 return nil, err
         }
@@ -534,8 +562,9 @@ func (d *DB) GetRecentMessages(ctx context.Context, limit int) ([]struct {
 }, error) {
         rows, err := d.pool.Query(ctx,
                 `SELECT role, content, created_at FROM (
-                        SELECT role, content, created_at, id FROM messages ORDER BY id DESC LIMIT $1
-                ) sub ORDER BY id ASC`, limit)
+                        SELECT role, content, created_at, id FROM messages
+                        WHERE project_id=$2 ORDER BY id DESC LIMIT $1
+                ) sub ORDER BY id ASC`, limit, d.ActiveProjectID(ctx))
         if err != nil {
                 return nil, err
         }
@@ -561,7 +590,9 @@ func (d *DB) GetRecentMessages(ctx context.Context, limit int) ([]struct {
 }
 
 func (d *DB) ClearMessages(ctx context.Context) error {
-        _, err := d.pool.Exec(ctx, `DELETE FROM messages`)
+        _, err := d.pool.Exec(ctx,
+                `DELETE FROM messages WHERE project_id=$1`,
+                d.ActiveProjectID(ctx))
         return err
 }
 
@@ -620,15 +651,16 @@ func (d *DB) LogTrace(ctx context.Context, scope, event, detail string) {
                 detail = detail[:4000] + "…(truncated)"
         }
         _, _ = d.pool.Exec(ctx,
-                `INSERT INTO agent_trace(scope, event, detail) VALUES($1, $2, $3)`,
-                scope, event, detail)
+                `INSERT INTO agent_trace(project_id, scope, event, detail) VALUES($1, $2, $3, $4)`,
+                d.ActiveProjectID(ctx), scope, event, detail)
 }
 
 // ListRecentTraces returns up to `limit` most recent trace entries (newest first).
 func (d *DB) ListRecentTraces(ctx context.Context, limit int) ([]AgentTrace, error) {
         rows, err := d.pool.Query(ctx,
                 `SELECT id, scope, event, detail, created_at
-         FROM agent_trace ORDER BY id DESC LIMIT $1`, limit)
+         FROM agent_trace WHERE project_id=$2 ORDER BY id DESC LIMIT $1`,
+                limit, d.ActiveProjectID(ctx))
         if err != nil {
                 return nil, err
         }

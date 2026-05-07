@@ -22,26 +22,73 @@ type BuilderJob struct {
         UpdatedAt   time.Time
 }
 
-// CreateBuilderJob inserts a new queued job for a task.
+// CreateBuilderJob inserts a new queued job for a task. The project_id is
+// looked up from the task so a job stays bound to its task's project even
+// if the operator switches the active project before the job is picked up.
 func (d *DB) CreateBuilderJob(ctx context.Context, taskID int, branch string) (*BuilderJob, error) {
+        pid := d.ActiveProjectID(ctx)
+        var tpid int
+        if err := d.pool.QueryRow(ctx,
+                `SELECT p.project_id FROM tasks t JOIN plans p ON p.id=t.plan_id WHERE t.id=$1`,
+                taskID).Scan(&tpid); err == nil && tpid > 0 {
+                pid = tpid
+        }
         row := d.pool.QueryRow(ctx, `
-        INSERT INTO builder_jobs(task_id, status, branch)
-        VALUES($1, 'queued', $2)
+        INSERT INTO builder_jobs(project_id, task_id, status, branch)
+        VALUES($1, $2, 'queued', $3)
         RETURNING id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
             started_at, finished_at, created_at, updated_at`,
-                taskID, branch)
+                pid, taskID, branch)
         return scanBuilderJob(row)
 }
 
-// GetNextQueuedJob returns the oldest job with status='queued'.
+// GetNextQueuedJob returns the oldest queued job for the active project.
 func (d *DB) GetNextQueuedJob(ctx context.Context) (*BuilderJob, error) {
         row := d.pool.QueryRow(ctx, `
         SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
             started_at, finished_at, created_at, updated_at
         FROM builder_jobs
-        WHERE status='queued'
+        WHERE status='queued' AND project_id=$1
         ORDER BY created_at ASC, id ASC
-        LIMIT 1`)
+        LIMIT 1`, d.ActiveProjectID(ctx))
+        return scanBuilderJob(row)
+}
+
+// ListQueuedJobs returns all queued jobs for the active project (oldest first),
+// joined with their task title — used by the Builder page to show what is
+// waiting to be picked up.
+func (d *DB) ListQueuedJobs(ctx context.Context) ([]BuilderJobSummary, error) {
+        rows, err := d.pool.Query(ctx, `
+        SELECT bj.id, bj.task_id, COALESCE(t.title, '(unknown)'), bj.status, bj.branch, bj.pr_url, bj.updated_at, bj.started_at
+        FROM builder_jobs bj
+        LEFT JOIN tasks t ON t.id = bj.task_id
+        WHERE bj.status='queued' AND bj.project_id=$1
+        ORDER BY bj.created_at ASC, bj.id ASC`, d.ActiveProjectID(ctx))
+        if err != nil {
+                return nil, err
+        }
+        defer rows.Close()
+        var out []BuilderJobSummary
+        for rows.Next() {
+                var s BuilderJobSummary
+                if err := rows.Scan(&s.ID, &s.TaskID, &s.TaskTitle, &s.Status, &s.Branch, &s.PRURL, &s.UpdatedAt, &s.StartedAt); err != nil {
+                        return nil, err
+                }
+                out = append(out, s)
+        }
+        return out, rows.Err()
+}
+
+// GetRunningJob returns the currently-running builder job for the active
+// project, if any. Returns pgx.ErrNoRows when nothing is running.
+func (d *DB) GetRunningJob(ctx context.Context) (*BuilderJob, error) {
+        row := d.pool.QueryRow(ctx, `
+        SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+            started_at, finished_at, created_at, updated_at
+        FROM builder_jobs
+        WHERE status='running' AND project_id=$1
+        ORDER BY started_at DESC NULLS LAST, id DESC
+        LIMIT 1`, d.ActiveProjectID(ctx))
         return scanBuilderJob(row)
 }
 
@@ -155,8 +202,8 @@ func (d *DB) ListJobsAwaitingReview(ctx context.Context) ([]BuilderJob, error) {
         SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
             started_at, finished_at, created_at, updated_at
         FROM builder_jobs
-        WHERE status='awaiting_review'
-        ORDER BY created_at ASC`)
+        WHERE status='awaiting_review' AND project_id=$1
+        ORDER BY created_at ASC`, d.ActiveProjectID(ctx))
         if err != nil {
                 return nil, err
         }
@@ -192,8 +239,9 @@ func (d *DB) ListRecentBuilderJobs(ctx context.Context, limit int) ([]BuilderJob
         SELECT bj.id, bj.task_id, COALESCE(t.title, '(unknown)'), bj.status, bj.branch, bj.pr_url, bj.updated_at, bj.started_at
         FROM builder_jobs bj
         LEFT JOIN tasks t ON t.id = bj.task_id
+        WHERE bj.project_id=$2
         ORDER BY bj.updated_at DESC
-        LIMIT $1`, limit)
+        LIMIT $1`, limit, d.ActiveProjectID(ctx))
         if err != nil {
                 return nil, err
         }

@@ -48,12 +48,14 @@ func (d *DB) Pool() *pgxpool.Pool { return d.pool }
 
 const schema = `
 CREATE TABLE IF NOT EXISTS project (
-        id          SERIAL PRIMARY KEY,
-        name        TEXT NOT NULL DEFAULT 'default',
-        status      TEXT NOT NULL DEFAULT 'new',
-        trust_score FLOAT NOT NULL DEFAULT 0,
-        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        id           SERIAL PRIMARY KEY,
+        name         TEXT NOT NULL DEFAULT 'default',
+        status       TEXT NOT NULL DEFAULT 'new',
+        trust_score  FLOAT NOT NULL DEFAULT 0,
+        repo_url     TEXT NOT NULL DEFAULT '',
+        github_token TEXT NOT NULL DEFAULT '',
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS project_docs (
@@ -186,7 +188,7 @@ func (d *DB) migrate(ctx context.Context) error {
         }
         _, _ = d.pool.Exec(ctx,
                 `ALTER TABLE builder_jobs ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0`)
-        _, err := d.pool.Exec(ctx, `
+        if _, err := d.pool.Exec(ctx, `
         CREATE TABLE IF NOT EXISTS agent_trace (
             id         SERIAL PRIMARY KEY,
             scope      TEXT NOT NULL DEFAULT '',
@@ -194,6 +196,40 @@ func (d *DB) migrate(ctx context.Context) error {
             detail     TEXT NOT NULL DEFAULT '',
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
-        CREATE INDEX IF NOT EXISTS agent_trace_id_desc ON agent_trace(id DESC);`)
-        return err
+        CREATE INDEX IF NOT EXISTS agent_trace_id_desc ON agent_trace(id DESC);`); err != nil {
+                return err
+        }
+
+        // Per-project columns. Default 1 so existing rows get attached to the
+        // bootstrapped default project below.
+        projectScopedTables := []string{
+                "plans", "messages", "clarifications", "suggestions",
+                "agent_trace", "project_docs", "doc_chunks", "task_log", "builder_jobs",
+        }
+        for _, t := range projectScopedTables {
+                if _, err := d.pool.Exec(ctx,
+                        `ALTER TABLE `+t+` ADD COLUMN IF NOT EXISTS project_id INTEGER NOT NULL DEFAULT 1`); err != nil {
+                        return fmt.Errorf("add project_id to %s: %w", t, err)
+                }
+                _, _ = d.pool.Exec(ctx,
+                        `CREATE INDEX IF NOT EXISTS `+t+`_project_id_idx ON `+t+`(project_id)`)
+        }
+        // New project columns on the project table itself (older deployments).
+        _, _ = d.pool.Exec(ctx, `ALTER TABLE project ADD COLUMN IF NOT EXISTS repo_url     TEXT NOT NULL DEFAULT ''`)
+        _, _ = d.pool.Exec(ctx, `ALTER TABLE project ADD COLUMN IF NOT EXISTS github_token TEXT NOT NULL DEFAULT ''`)
+
+        // Make sure a default project (id=1) exists so foreign-key style
+        // scoping works on a fresh install. We also bump the SERIAL sequence
+        // past 1 in case the user later inserts more projects.
+        if _, err := d.pool.Exec(ctx, `
+            INSERT INTO project (id, name)
+            SELECT 1, 'default'
+            WHERE NOT EXISTS (SELECT 1 FROM project WHERE id=1)`); err != nil {
+                return fmt.Errorf("seed default project: %w", err)
+        }
+        _, _ = d.pool.Exec(ctx,
+                `SELECT setval(pg_get_serial_sequence('project','id'),
+                              GREATEST((SELECT MAX(id) FROM project), 1))`)
+
+        return nil
 }

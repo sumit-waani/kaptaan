@@ -62,9 +62,20 @@ type Builder struct {
         cfg               BuilderConfig
         send              func(string)
         sendBuilderStatus func(taskTitle, milestone, detail string)
+        notifyState       func()
         onJobDone         onJobDoneFn
 
         notify chan struct{}
+}
+
+// SetNotifyState wires a callback the builder calls whenever queue/running
+// state may have changed (broadcast a fresh snapshot to UIs).
+func (b *Builder) SetNotifyState(fn func()) { b.notifyState = fn }
+
+func (b *Builder) emitState() {
+        if b.notifyState != nil {
+                b.notifyState()
+        }
 }
 
 type buildRuntime struct {
@@ -101,9 +112,25 @@ func (b *Builder) Notify() {
         }
 }
 
+// status emits a builder milestone: persists it to task_log, pushes it to
+// the UI via SSE, and is the single source of truth for the Builder page.
+// taskID may be 0 (e.g. before a task is loaded); we still SSE-broadcast.
 func (b *Builder) status(taskTitle, milestone, detail string) {
         if b.sendBuilderStatus != nil {
                 b.sendBuilderStatus(taskTitle, milestone, detail)
+        }
+}
+
+// statusForTask is like status but also persists to task_log so the Builder
+// page can replay milestones after a refresh.
+func (b *Builder) statusForTask(ctx context.Context, taskID int, taskTitle, milestone, detail string) {
+        b.status(taskTitle, milestone, detail)
+        if taskID > 0 {
+                payload := milestone
+                if strings.TrimSpace(detail) != "" {
+                        payload = milestone + ": " + detail
+                }
+                _ = b.db.LogEvent(ctx, taskID, "builder_status", payload)
         }
 }
 
@@ -169,6 +196,8 @@ func (b *Builder) processNextJob(ctx context.Context) error {
         _ = b.db.UpdateTaskStatus(ctx, task.ID, "in_progress")
         _ = b.db.LogEvent(ctx, task.ID, "builder_start", fmt.Sprintf("job_id=%d", job.ID))
         b.send(fmt.Sprintf("🔧 Builder started: %s", task.Title))
+        b.emitState()
+        defer b.emitState()
 
         exec, cleanup, err := b.spawnJobExecutor(ctx, task)
         if err != nil {
@@ -197,11 +226,25 @@ func (b *Builder) spawnJobExecutor(ctx context.Context, task *db.Task) (*tools.E
         if b.cfg.E2BAPIKey == "" {
                 return nil, func() {}, fmt.Errorf("E2B_API_KEY not configured")
         }
-        if b.cfg.GithubToken == "" {
-                return nil, func() {}, fmt.Errorf("GITHUB_TOKEN not configured")
+
+        // Resolve per-project repo+token, with env vars as fallback.
+        repo, token := b.cfg.GithubRepo, b.cfg.GithubToken
+        if proj, err := b.db.GetActiveProject(ctx); err == nil && proj != nil {
+                if strings.TrimSpace(proj.RepoURL) != "" {
+                        repo = proj.RepoURL
+                }
+                if strings.TrimSpace(proj.GithubToken) != "" {
+                        token = proj.GithubToken
+                }
+        }
+        if token == "" {
+                return nil, func() {}, fmt.Errorf("GITHUB_TOKEN not configured for active project")
+        }
+        if repo == "" {
+                return nil, func() {}, fmt.Errorf("GITHUB_REPO not configured for active project")
         }
 
-        b.status(task.Title, "sandbox", "Provisioning fresh E2B sandbox")
+        b.statusForTask(ctx, task.ID, task.Title, "sandbox", "Provisioning fresh E2B sandbox")
         sb, err := sandbox.Create(ctx, b.cfg.E2BAPIKey, "base", sandboxLifetimeSecs)
         if err != nil {
                 return nil, func() {}, err
@@ -221,12 +264,12 @@ func (b *Builder) spawnJobExecutor(ctx context.Context, task *db.Task) (*tools.E
         // Strip everything from the host env — only forward what the sandbox needs.
         // gh CLI authenticates from GH_TOKEN; Go defaults GOPATH/GOCACHE under HOME.
         env := map[string]string{
-                "GH_TOKEN": b.cfg.GithubToken,
+                "GH_TOKEN": token,
                 "PATH":     "/home/user/.local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                 "HOME":     "/home/user",
         }
 
-        b.status(task.Title, "sandbox", "Installing Go toolchain")
+        b.statusForTask(ctx, task.ID, task.Title, "sandbox", "Installing Go toolchain")
         bootstrap := `set -e
 mkdir -p $HOME/.local $HOME/go $HOME/.cache/go-build
 if [ ! -x $HOME/.local/go/bin/go ]; then
@@ -258,8 +301,8 @@ echo "gh: $(gh --version | head -1)"`
         }
         exec := &tools.Executor{
                 Runtime:     rt,
-                GithubRepo:  b.cfg.GithubRepo,
-                GithubToken: b.cfg.GithubToken,
+                GithubRepo:  repo,
+                GithubToken: token,
         }
         return exec, cleanup, nil
 }
@@ -306,8 +349,8 @@ func (b *Builder) runBuildLoop(ctx context.Context, exec *tools.Executor, job *d
                 }
         }
 
-        b.status(task.Title, "started", fmt.Sprintf("Branch: %s", branch))
-        b.status(task.Title, "coding", "Writing files")
+        b.statusForTask(ctx, task.ID, task.Title, "started", fmt.Sprintf("Branch: %s", branch))
+        b.statusForTask(ctx, task.ID, task.Title, "coding", "Writing files")
 
         docCtx, _ := BuildDocContext(ctx, b.db, task.Title+" "+task.Description, 8)
         subtasks, _ := b.db.GetSubtasks(ctx, task.ID)
@@ -378,7 +421,7 @@ Relevant docs:
                 }
         }
 
-        b.status(task.Title, "building", "Running go build ./...")
+        b.statusForTask(ctx, task.ID, task.Title, "building", "Running go build ./...")
         if runtime.buildOutput == "" {
                 buildResult := exec.Shell(ctx, "go build ./... 2>&1", 180)
                 runtime.buildOutput = buildResult.Output
@@ -386,10 +429,10 @@ Relevant docs:
                         return fmt.Errorf("final build failed: %s", truncateStr(buildResult.Output, 1000))
                 }
         }
-        b.status(task.Title, "building", "go build ./... — pass")
+        b.statusForTask(ctx, task.ID, task.Title, "building", "go build ./... — pass")
 
         if !runtime.testPassed {
-                b.status(task.Title, "testing", "Running go test ./... -cover")
+                b.statusForTask(ctx, task.ID, task.Title, "testing", "Running go test ./... -cover")
                 result := exec.Shell(ctx, "go test ./... -cover 2>&1", 240)
                 runtime.testOutput = result.Output
                 if result.IsErr {
@@ -397,7 +440,7 @@ Relevant docs:
                 }
                 runtime.testPassed = true
         }
-        b.status(task.Title, "testing", "go test ./... -cover — pass")
+        b.statusForTask(ctx, task.ID, task.Title, "testing", "go test ./... -cover — pass")
 
         if runtime.prURL == "" {
                 title := fmt.Sprintf("Task %d: %s", task.ID, task.Title)
@@ -425,7 +468,7 @@ Relevant docs:
         )
         runtime.diffSummary = truncateStr(diffResult.Output, 5000)
 
-        b.status(task.Title, "pr_opened", runtime.prURL)
+        b.statusForTask(ctx, task.ID, task.Title, "pr_opened", runtime.prURL)
 
         _ = b.db.UpdateTaskPR(ctx, task.ID, runtime.prURL)
         _ = b.db.UpdateTaskStatus(ctx, task.ID, "done")
@@ -481,7 +524,7 @@ func (b *Builder) handleToolCall(ctx context.Context, exec *tools.Executor, task
         case "write_file":
                 path := strings.TrimSpace(args["path"])
                 if path != "" {
-                        b.status(task.Title, "coding", fmt.Sprintf("Updating %s", path))
+                        b.statusForTask(ctx, task.ID, task.Title, "coding", fmt.Sprintf("Updating %s", path))
                 }
                 result := exec.Run(ctx, tc.Function.Name, tc.Function.Arguments)
                 out := result.String()
@@ -501,10 +544,10 @@ func (b *Builder) handleToolCall(ctx context.Context, exec *tools.Executor, task
         case "shell":
                 cmd := args["cmd"]
                 if strings.Contains(cmd, "go build") {
-                        b.status(task.Title, "building", "Running go build ./...")
+                        b.statusForTask(ctx, task.ID, task.Title, "building", "Running go build ./...")
                 }
                 if strings.Contains(cmd, "go test") {
-                        b.status(task.Title, "testing", "Running go test ./... -cover")
+                        b.statusForTask(ctx, task.ID, task.Title, "testing", "Running go test ./... -cover")
                 }
                 result := exec.Run(ctx, tc.Function.Name, tc.Function.Arguments)
                 out := result.String()
@@ -513,13 +556,13 @@ func (b *Builder) handleToolCall(ctx context.Context, exec *tools.Executor, task
                         if !result.IsErr {
                                 rt.testPassed = true
                                 out += "\ncoverage: " + extractCoverage(out)
-                                b.status(task.Title, "testing", "go test ./... -cover — pass")
+                                b.statusForTask(ctx, task.ID, task.Title, "testing", "go test ./... -cover — pass")
                         }
                 }
                 if strings.Contains(cmd, "go build") {
                         rt.buildOutput = out
                         if !result.IsErr {
-                                b.status(task.Title, "building", "go build ./... — pass")
+                                b.statusForTask(ctx, task.ID, task.Title, "building", "go build ./... — pass")
                         }
                 }
                 return out
@@ -533,7 +576,7 @@ func (b *Builder) handleToolCall(ctx context.Context, exec *tools.Executor, task
                         if prURL != "" {
                                 rt.prURL = prURL
                                 rt.prNumber = prNumberFromURL(prURL)
-                                b.status(task.Title, "pr_opened", prURL)
+                                b.statusForTask(ctx, task.ID, task.Title, "pr_opened", prURL)
                         }
                 }
                 return out
