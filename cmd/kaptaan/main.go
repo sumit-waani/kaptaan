@@ -42,6 +42,14 @@ func main() {
                 NIMKey1:     os.Getenv("NIM_API_KEY_1"),
                 NIMKey2:     os.Getenv("NIM_API_KEY_2"),
         }
+        // Escape hatch: when LLM_DEEPSEEK_ONLY=1 we drop the (often slow / 429-prone)
+        // free NIM tier entirely and route every call straight to paid DeepSeek.
+        // Lets us isolate "is the agent stuck?" vs "is NIM stuck?" in one toggle.
+        if os.Getenv("LLM_DEEPSEEK_ONLY") == "1" {
+                llmCfg.NIMKey1 = ""
+                llmCfg.NIMKey2 = ""
+                log.Println("⚙️  LLM_DEEPSEEK_ONLY=1 — NIM disabled, routing only to DeepSeek paid")
+        }
         if llmCfg.DeepSeekKey == "" && llmCfg.NIMKey1 == "" && llmCfg.NIMKey2 == "" {
                 log.Println("⚠️  No LLM API keys found — running in UI-only mode. Set DEEPSEEK_API_KEY or NIM_API_KEY_* to enable the agent.")
                 webServer.SetMOTD("⚠️ **Kaptaan needs an LLM API key to work.**\n\n" +

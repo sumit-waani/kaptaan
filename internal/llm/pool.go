@@ -102,9 +102,13 @@ func New(cfg Config, onUsage func(UsageRecord)) *Pool {
 
         // ── Paid fallback last ─────────────────────────────────────────────
         if cfg.DeepSeekKey != "" {
+                // DeepSeek paid API exposes two production models: "deepseek-chat"
+                // (V3, general) and "deepseek-reasoner" (R1, slow but stronger).
+                // We default to deepseek-chat for everything — it supports tool
+                // calling + JSON mode and responds fast (typ. 5–20s).
                 providers = append(providers,
-                        &provider{name: "deepseek-pro", url: deepseekURL,
-                                model: "deepseek-v4-pro", key: cfg.DeepSeekKey, isPaid: true},
+                        &provider{name: "deepseek-chat", url: deepseekURL,
+                                model: "deepseek-chat", key: cfg.DeepSeekKey, isPaid: true},
                 )
         }
 
