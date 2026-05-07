@@ -227,7 +227,7 @@ func (t *turn) persistUsage(ctx context.Context, projectID, prompt, completion i
         if prompt == 0 && completion == 0 {
                 return
         }
-        _ = t.a.db.RecordUsage(ctx, projectID, "deepseek", "deepseek-v4-pro", prompt, completion)
+        _ = t.a.db.RecordUsage(ctx, projectID, "deepseek", t.a.pool.ActiveModel(), prompt, completion)
 }
 
 // ensureSandbox lazily creates an E2B sandbox for the turn and clones the

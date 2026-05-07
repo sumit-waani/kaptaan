@@ -278,6 +278,9 @@ func retryAfterCooldown(headers http.Header, maxCap time.Duration) time.Duration
         return d
 }
 
+// ActiveModel returns the model name currently in use.
+func (p *Pool) ActiveModel() string { return deepseekModel }
+
 // StatusReport returns a one-line human-readable status of the provider.
 func (p *Pool) StatusReport() string {
         p.mu.Lock()
