@@ -360,12 +360,30 @@ const rawHTML = `<!DOCTYPE html>
       </section>
 
       <section class="settings-section">
-        <h2>Recent activity</h2>
+        <h2>Agent trace
+          <span style="font-family: var(--sans); font-weight: 400; color: var(--text3); text-transform: none; letter-spacing: 0; font-size: 11px; margin-left: 6px;">
+            (every internal step the manager takes)
+          </span>
+        </h2>
+        <div class="settings-card">
+          <div style="display:flex; gap:8px; margin-bottom:10px; align-items: center;"
+               x-effect="traceAutoEffect">
+            <button class="settings-action" @click="loadTrace()">Refresh</button>
+            <label style="font-size:12px; color: var(--text2); display:flex; gap:6px; align-items:center; cursor:pointer;">
+              <input type="checkbox" x-model="traceAuto" style="margin:0;"/> Auto-refresh
+            </label>
+          </div>
+          <pre class="console" style="max-height: 320px;" x-text="traceText || 'No trace entries yet — send a chat message to populate.'"></pre>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2>Task log</h2>
         <div class="settings-card">
           <div style="display:flex; gap:8px; margin-bottom:10px;">
-            <button class="settings-action" @click="loadLogs()">Refresh logs</button>
+            <button class="settings-action" @click="loadLogs()">Refresh</button>
           </div>
-          <pre class="console" x-text="logsText || 'No logs yet.'"></pre>
+          <pre class="console" x-text="logsText || 'No task events yet.'"></pre>
         </div>
       </section>
 
@@ -398,6 +416,15 @@ function kaptaan() {
     screen:   'loading',
     view:     'chat',
 
+    get traceAutoEffect() {
+      if (this.traceAuto && !this._traceTimer) {
+        this._traceTimer = setInterval(() => this.loadTrace(), 2000);
+      } else if (!this.traceAuto && this._traceTimer) {
+        clearInterval(this._traceTimer); this._traceTimer = null;
+      }
+      return this.traceAuto;
+    },
+
     authUser: '', authPass: '', authErr: '', authBusy: false,
 
     messages:  [],
@@ -406,11 +433,14 @@ function kaptaan() {
     connected: false,
     _es:       null,
 
-    docs:      [],
-    jobs:      [],
-    logsText:  '',
-    usageText: '',
-    uploading: false,
+    docs:       [],
+    jobs:       [],
+    logsText:   '',
+    usageText:  '',
+    traceText:  '',
+    traceAuto:  false,
+    _traceTimer: null,
+    uploading:  false,
 
     async init() {
       try {
@@ -457,7 +487,10 @@ function kaptaan() {
       this._es = es;
 
       es.addEventListener('status', e => {
-        try { this.status = JSON.parse(e.data); } catch {}
+        try {
+          this.status = JSON.parse(e.data);
+          if (this.view === 'settings') this.loadTrace();
+        } catch {}
       });
 
       es.addEventListener('msg', e => {
@@ -476,6 +509,10 @@ function kaptaan() {
       });
 
       es.addEventListener('history_end', () => { this.scrollBottom(); });
+
+      es.addEventListener('ask_done', () => {
+        if (this.view === 'settings') this.loadTrace();
+      });
 
       es.onopen = () => { this.connected = true; };
       es.onerror = () => {
@@ -532,7 +569,19 @@ function kaptaan() {
     },
 
     async loadSettings() {
-      this.loadDocs(); this.loadBuilder(); this.loadLogs(); this.loadUsage();
+      this.loadDocs(); this.loadBuilder(); this.loadLogs(); this.loadUsage(); this.loadTrace();
+    },
+
+    async loadTrace() {
+      try {
+        const r = await fetch('/api/trace');
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!d.traces || d.traces.length === 0) { this.traceText = ''; return; }
+        this.traceText = d.traces
+          .map(t => '[' + t.time + '] ' + t.scope + '/' + t.event + (t.detail ? ' — ' + t.detail : ''))
+          .join('\n');
+      } catch {}
     },
 
     async loadDocs() {
@@ -569,7 +618,13 @@ function kaptaan() {
         if (!r.ok) return;
         const d = await r.json();
         const fmt = (rows) => rows && rows.length
-          ? rows.map(u => '  ' + u.provider + '/' + u.model + ': in=' + u.prompt_tokens + ' out=' + u.completion_tokens + ' calls=' + u.calls).join('\n')
+          ? rows.map(u =>
+              '  ' + u.provider + '/' + u.model +
+              ': in=' + (u.prompt_tokens||0) +
+              ' out=' + (u.completion_tokens||0) +
+              ' total=' + (u.total_tokens||0) +
+              ' calls=' + (u.calls||0)
+            ).join('\n')
           : '  (none)';
         this.usageText = 'TODAY:\n' + fmt(d.today) + '\n\nALL TIME:\n' + fmt(d.all);
       } catch {}

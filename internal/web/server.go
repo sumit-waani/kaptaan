@@ -198,8 +198,8 @@ func (s *Server) sseMsg(typ, text string) string {
         return "event: msg\ndata: " + string(data) + "\n\n"
 }
 
-// broadcastStatus pushes a fresh status event to all connected clients.
-func (s *Server) broadcastStatus(ctx context.Context) {
+// BroadcastStatus pushes a fresh status event to all connected clients.
+func (s *Server) BroadcastStatus(ctx context.Context) {
         if payload, err := s.buildStatusJSON(ctx); err == nil {
                 s.hub.broadcast("event: status\ndata: " + payload + "\n\n")
         }
@@ -231,6 +231,7 @@ func (s *Server) Start(ctx context.Context) {
         mux.HandleFunc("/api/docs", s.requireAuth(s.handleDocs))
         mux.HandleFunc("/api/docs/", s.requireAuth(s.handleDocByID))
         mux.HandleFunc("/api/builder", s.requireAuth(s.handleBuilder))
+        mux.HandleFunc("/api/trace", s.requireAuth(s.handleTrace))
 
         srv := &http.Server{
                 Addr:    "0.0.0.0:5000",
@@ -455,7 +456,7 @@ func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
                 return
         }
         s.agent.Pause(r.Context())
-        s.broadcastStatus(r.Context())
+        s.BroadcastStatus(r.Context())
         jsonOK(w, map[string]string{"ok": "paused"})
 }
 
@@ -469,7 +470,7 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
                 return
         }
         s.agent.Resume(r.Context())
-        s.broadcastStatus(r.Context())
+        s.BroadcastStatus(r.Context())
         jsonOK(w, map[string]string{"ok": "resuming"})
 }
 
@@ -605,6 +606,30 @@ func (s *Server) handleBuilder(w http.ResponseWriter, r *http.Request) {
                 })
         }
         jsonOK(w, map[string]interface{}{"jobs": out})
+}
+
+func (s *Server) handleTrace(w http.ResponseWriter, r *http.Request) {
+        traces, err := s.db.ListRecentTraces(r.Context(), 60)
+        if err != nil {
+                jsonErr(w, err.Error(), http.StatusInternalServerError)
+                return
+        }
+        type item struct {
+                Time   string `json:"time"`
+                Scope  string `json:"scope"`
+                Event  string `json:"event"`
+                Detail string `json:"detail"`
+        }
+        out := []item{}
+        for _, t := range traces {
+                out = append(out, item{
+                        Time:   t.CreatedAt.Format("15:04:05"),
+                        Scope:  t.Scope,
+                        Event:  t.Event,
+                        Detail: t.Detail,
+                })
+        }
+        jsonOK(w, map[string]interface{}{"traces": out})
 }
 
 func (s *Server) handleDocByID(w http.ResponseWriter, r *http.Request) {

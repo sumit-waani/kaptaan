@@ -1,43 +1,43 @@
 package db
 
 import (
-	"context"
-	"fmt"
-	"time"
+        "context"
+        "fmt"
+        "time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+        "github.com/jackc/pgx/v5/pgxpool"
 )
 
 // DB wraps pgxpool for all database operations.
 type DB struct {
-	pool *pgxpool.Pool
+        pool *pgxpool.Pool
 }
 
 // New connects to Postgres and initialises the schema.
 func New(ctx context.Context, dsn string) (*DB, error) {
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("parse dsn: %w", err)
-	}
-	cfg.MaxConns = 5
-	cfg.MinConns = 1
-	cfg.MaxConnLifetime = 30 * time.Minute
-	cfg.MaxConnIdleTime = 5 * time.Minute
+        cfg, err := pgxpool.ParseConfig(dsn)
+        if err != nil {
+                return nil, fmt.Errorf("parse dsn: %w", err)
+        }
+        cfg.MaxConns = 5
+        cfg.MinConns = 1
+        cfg.MaxConnLifetime = 30 * time.Minute
+        cfg.MaxConnIdleTime = 5 * time.Minute
 
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
-	}
+        pool, err := pgxpool.NewWithConfig(ctx, cfg)
+        if err != nil {
+                return nil, fmt.Errorf("connect: %w", err)
+        }
 
-	if err := pool.Ping(ctx); err != nil {
-		return nil, fmt.Errorf("ping: %w", err)
-	}
+        if err := pool.Ping(ctx); err != nil {
+                return nil, fmt.Errorf("ping: %w", err)
+        }
 
-	d := &DB{pool: pool}
-	if err := d.migrate(ctx); err != nil {
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	return d, nil
+        d := &DB{pool: pool}
+        if err := d.migrate(ctx); err != nil {
+                return nil, fmt.Errorf("migrate: %w", err)
+        }
+        return d, nil
 }
 
 // Close releases all connections.
@@ -181,10 +181,19 @@ CREATE TABLE IF NOT EXISTS sessions (
 `
 
 func (d *DB) migrate(ctx context.Context) error {
-	if _, err := d.pool.Exec(ctx, schema); err != nil {
-		return err
-	}
-	_, _ = d.pool.Exec(ctx,
-		`ALTER TABLE builder_jobs ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0`)
-	return nil
+        if _, err := d.pool.Exec(ctx, schema); err != nil {
+                return err
+        }
+        _, _ = d.pool.Exec(ctx,
+                `ALTER TABLE builder_jobs ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0`)
+        _, err := d.pool.Exec(ctx, `
+        CREATE TABLE IF NOT EXISTS agent_trace (
+            id         SERIAL PRIMARY KEY,
+            scope      TEXT NOT NULL DEFAULT '',
+            event      TEXT NOT NULL DEFAULT '',
+            detail     TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS agent_trace_id_desc ON agent_trace(id DESC);`)
+        return err
 }

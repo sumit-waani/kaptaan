@@ -77,6 +77,7 @@ func main() {
                 webServer.Ask,
                 webServer.SendPRReview,
                 webServer.SendBuilderStatus,
+                func() { webServer.BroadcastStatus(context.Background()) },
         )
         pool.OnAllDown = func() {
                 webServer.Send("⚠️ All LLM providers are on cooldown. Pausing agent until a provider recovers.")

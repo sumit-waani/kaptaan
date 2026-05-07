@@ -80,11 +80,21 @@ type Suggestion struct {
 }
 
 type LLMUsage struct {
-        Provider         string
-        Model            string
-        PromptTokens     int
-        CompletionTokens int
-        TotalTokens      int
+        Provider         string `json:"provider"`
+        Model            string `json:"model"`
+        PromptTokens     int    `json:"prompt_tokens"`
+        CompletionTokens int    `json:"completion_tokens"`
+        TotalTokens      int    `json:"total_tokens"`
+        Calls            int    `json:"calls"`
+}
+
+// AgentTrace is one entry in the manager's step-by-step debug trace.
+type AgentTrace struct {
+        ID        int       `json:"id"`
+        Scope     string    `json:"scope"`
+        Event     string    `json:"event"`
+        Detail    string    `json:"detail"`
+        CreatedAt time.Time `json:"created_at"`
 }
 
 // ─── Project ───────────────────────────────────────────────────────────────
@@ -566,20 +576,34 @@ func (d *DB) RecordUsage(ctx context.Context, provider, model string, prompt, co
 }
 
 func (d *DB) GetUsageSummary(ctx context.Context) ([]LLMUsage, error) {
-        rows, err := d.pool.Query(ctx,
-                `SELECT provider, model,
-                        SUM(prompt_tokens), SUM(completion_tokens), SUM(total_tokens)
-                 FROM llm_usage
-                 GROUP BY provider, model
-                 ORDER BY SUM(total_tokens) DESC`)
+        return d.queryUsage(ctx, `
+        SELECT provider, model,
+               SUM(prompt_tokens), SUM(completion_tokens), SUM(total_tokens), COUNT(*)
+        FROM llm_usage
+        GROUP BY provider, model
+        ORDER BY SUM(total_tokens) DESC`)
+}
+
+func (d *DB) GetUsageToday(ctx context.Context) ([]LLMUsage, error) {
+        return d.queryUsage(ctx, `
+        SELECT provider, model,
+               SUM(prompt_tokens), SUM(completion_tokens), SUM(total_tokens), COUNT(*)
+        FROM llm_usage
+        WHERE created_at >= CURRENT_DATE
+        GROUP BY provider, model
+        ORDER BY SUM(total_tokens) DESC`)
+}
+
+func (d *DB) queryUsage(ctx context.Context, sql string) ([]LLMUsage, error) {
+        rows, err := d.pool.Query(ctx, sql)
         if err != nil {
                 return nil, err
         }
         defer rows.Close()
-        var usage []LLMUsage
+        usage := []LLMUsage{}
         for rows.Next() {
                 var u LLMUsage
-                if err := rows.Scan(&u.Provider, &u.Model, &u.PromptTokens, &u.CompletionTokens, &u.TotalTokens); err != nil {
+                if err := rows.Scan(&u.Provider, &u.Model, &u.PromptTokens, &u.CompletionTokens, &u.TotalTokens, &u.Calls); err != nil {
                         return nil, err
                 }
                 usage = append(usage, u)
@@ -587,27 +611,37 @@ func (d *DB) GetUsageSummary(ctx context.Context) ([]LLMUsage, error) {
         return usage, rows.Err()
 }
 
-func (d *DB) GetUsageToday(ctx context.Context) ([]LLMUsage, error) {
+// ─── Agent Trace (deep debug log) ──────────────────────────────────────────
+
+// LogTrace appends one step to the agent_trace table. Errors are swallowed
+// to keep the hot path simple; tracing is best-effort.
+func (d *DB) LogTrace(ctx context.Context, scope, event, detail string) {
+        if len(detail) > 4000 {
+                detail = detail[:4000] + "…(truncated)"
+        }
+        _, _ = d.pool.Exec(ctx,
+                `INSERT INTO agent_trace(scope, event, detail) VALUES($1, $2, $3)`,
+                scope, event, detail)
+}
+
+// ListRecentTraces returns up to `limit` most recent trace entries (newest first).
+func (d *DB) ListRecentTraces(ctx context.Context, limit int) ([]AgentTrace, error) {
         rows, err := d.pool.Query(ctx,
-                `SELECT provider, model,
-                        SUM(prompt_tokens), SUM(completion_tokens), SUM(total_tokens)
-                 FROM llm_usage
-                 WHERE created_at >= CURRENT_DATE
-                 GROUP BY provider, model
-                 ORDER BY SUM(total_tokens) DESC`)
+                `SELECT id, scope, event, detail, created_at
+         FROM agent_trace ORDER BY id DESC LIMIT $1`, limit)
         if err != nil {
                 return nil, err
         }
         defer rows.Close()
-        var usage []LLMUsage
+        out := []AgentTrace{}
         for rows.Next() {
-                var u LLMUsage
-                if err := rows.Scan(&u.Provider, &u.Model, &u.PromptTokens, &u.CompletionTokens, &u.TotalTokens); err != nil {
+                var t AgentTrace
+                if err := rows.Scan(&t.ID, &t.Scope, &t.Event, &t.Detail, &t.CreatedAt); err != nil {
                         return nil, err
                 }
-                usage = append(usage, u)
+                out = append(out, t)
         }
-        return usage, rows.Err()
+        return out, rows.Err()
 }
 
 // ─── Scan helpers ──────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import (
         "log"
         "strings"
         "sync"
+        "time"
 
         "github.com/cto-agent/cto-agent/internal/db"
         "github.com/cto-agent/cto-agent/internal/llm"
@@ -44,10 +45,45 @@ type Manager struct {
         ask           func(string) string
         sendPRReview  func(jobID int, taskTitle, prURL, note, diff string)
         notifyBuilder func()
+        notifyStatus  func()
 
         mu       sync.Mutex
         busy     bool
         cancelFn context.CancelFunc
+}
+
+// trace is a thin convenience around db.LogTrace + go log + verifying ctx.
+func (m *Manager) trace(ctx context.Context, event, detail string) {
+        log.Printf("[manager] %s — %s", event, truncateStr(detail, 120))
+        m.db.LogTrace(context.Background(), "manager", event, detail)
+}
+
+// tryStartRun atomically claims the busy slot. Returns (cancel, true) on
+// success, or (nil, false) if another run is already in progress.
+func (m *Manager) tryStartRun(parent context.Context) (context.Context, context.CancelFunc, bool) {
+        m.mu.Lock()
+        if m.busy {
+                m.mu.Unlock()
+                return nil, nil, false
+        }
+        runCtx, cancel := context.WithCancel(parent)
+        m.busy = true
+        m.cancelFn = cancel
+        m.mu.Unlock()
+        if m.notifyStatus != nil {
+                m.notifyStatus()
+        }
+        return runCtx, cancel, true
+}
+
+func (m *Manager) finishRun() {
+        m.mu.Lock()
+        m.busy = false
+        m.cancelFn = nil
+        m.mu.Unlock()
+        if m.notifyStatus != nil {
+                m.notifyStatus()
+        }
 }
 
 type managerPlanPhase struct {
@@ -86,36 +122,40 @@ func NewManager(database *db.DB, pool *llm.Pool, executor *tools.Executor,
 // HandleUserMessage is the single entry point for all agent activity.
 // Triggered when the user sends a chat message.
 func (m *Manager) HandleUserMessage(ctx context.Context, userText string) {
+        m.trace(ctx, "user_message_received", truncateStr(userText, 200))
+
         if m.IsPaused(ctx) {
+                m.trace(ctx, "rejected_paused", "")
                 m.send("⏸ Agent is paused. Resume from the chat header to continue.")
                 return
         }
 
-        m.mu.Lock()
-        if m.busy {
-                m.mu.Unlock()
+        runCtx, cancel, ok := m.tryStartRun(ctx)
+        if !ok {
+                m.trace(ctx, "rejected_busy", "another HandleUserMessage already running")
                 m.send("⏳ Still working on your last message — hit Stop in the header if you want me to drop it.")
                 return
         }
-        runCtx, cancel := context.WithCancel(ctx)
-        m.busy = true
-        m.cancelFn = cancel
-        m.mu.Unlock()
         defer func() {
-                m.mu.Lock()
-                m.busy = false
-                m.cancelFn = nil
-                m.mu.Unlock()
+                m.finishRun()
                 cancel()
+                m.trace(context.Background(), "run_complete", "manager idle")
         }()
         ctx = runCtx
 
+        m.trace(ctx, "building_context", "loading docs, conversation history, repo snapshot")
         docCtx, err := BuildDocContext(ctx, m.db, "", 12)
         if err != nil {
+                m.trace(ctx, "doc_context_error", err.Error())
                 docCtx = "(documentation unavailable)"
         }
         convo := m.recentConvo(ctx, 20)
-        repoInfo, _ := m.exec.ScanRepo(ctx)
+        repoInfo, repoErr := m.exec.ScanRepo(ctx)
+        if repoErr != nil {
+                m.trace(ctx, "repo_scan_error", repoErr.Error())
+        }
+        m.trace(ctx, "context_built",
+                fmt.Sprintf("doc_chars=%d convo_chars=%d repo_chars=%d", len(docCtx), len(convo), len(repoInfo)))
 
         msgs := []llm.Message{
                 {Role: "system", Content: managerSystemPrompt},
@@ -134,29 +174,43 @@ USER MESSAGE:
 
         for round := 0; round < 4; round++ {
                 if ctx.Err() != nil {
+                        m.trace(ctx, "stopped_by_user", fmt.Sprintf("round=%d", round))
                         m.send("⏹ Stopped.")
                         return
                 }
+
+                m.trace(ctx, "llm_request",
+                        fmt.Sprintf("round=%d messages=%d", round, len(msgs)))
+                started := time.Now()
                 resp, err := m.llm.ChatJSON(ctx, msgs)
+                dur := time.Since(started).Round(time.Millisecond)
                 if err != nil {
                         if ctx.Err() != nil {
+                                m.trace(ctx, "stopped_by_user", "during LLM call")
                                 m.send("⏹ Stopped.")
                                 return
                         }
+                        m.trace(ctx, "llm_error", fmt.Sprintf("after=%s err=%s", dur, err.Error()))
                         m.send("⚠️ LLM error: " + err.Error())
                         return
                 }
                 if len(resp.Choices) == 0 {
+                        m.trace(ctx, "llm_empty", fmt.Sprintf("after=%s", dur))
                         m.send("⚠️ Empty response from LLM.")
                         return
                 }
                 raw := resp.Choices[0].Message.Content
+                m.trace(ctx, "llm_response",
+                        fmt.Sprintf("after=%s in=%d out=%d body=%s",
+                                dur, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, truncateStr(raw, 300)))
 
                 var d managerDecision
                 if err := json.Unmarshal([]byte(cleanJSON(raw)), &d); err != nil {
+                        m.trace(ctx, "decision_parse_error", err.Error())
                         m.send(strings.TrimSpace(raw))
                         return
                 }
+                m.trace(ctx, "decision", fmt.Sprintf("action=%s", d.Action))
 
                 switch strings.ToLower(d.Action) {
                 case "reply":
@@ -166,9 +220,12 @@ USER MESSAGE:
                         return
                 case "ask":
                         if strings.TrimSpace(d.Question) == "" {
+                                m.trace(ctx, "ask_empty", "no question text")
                                 return
                         }
+                        m.trace(ctx, "asking_user", truncateStr(d.Question, 200))
                         answer := m.ask(d.Question)
+                        m.trace(ctx, "ask_answered", truncateStr(answer, 200))
                         if strings.TrimSpace(answer) == "" {
                                 return
                         }
@@ -177,10 +234,10 @@ USER MESSAGE:
                                 llm.Message{Role: "user", Content: "ANSWER: " + answer},
                         )
                 case "plan":
-                        // Plan preview — give the user a chance to approve or steer
-                        // before we persist tasks and burn builder tokens.
                         preview := formatPlanPreview(d.Summary, d.Phases)
+                        m.trace(ctx, "plan_proposed", fmt.Sprintf("phases=%d summary=%s", len(d.Phases), truncateStr(d.Summary, 120)))
                         answer := m.ask(preview + "\n\nReply **go** to queue this plan, or tell me what to change.")
+                        m.trace(ctx, "plan_decision", truncateStr(answer, 200))
                         if isYes(answer) || strings.EqualFold(strings.TrimSpace(answer), "go") {
                                 m.persistPlanAndQueue(ctx, d.Summary, d.Phases)
                                 return
@@ -189,12 +246,12 @@ USER MESSAGE:
                                 m.send("⌛ No reply — plan discarded. Send me a new message when ready.")
                                 return
                         }
-                        // Treat the reply as refinement guidance and re-plan.
                         msgs = append(msgs,
                                 llm.Message{Role: "assistant", Content: raw},
                                 llm.Message{Role: "user", Content: "PLAN FEEDBACK: " + answer},
                         )
                 default:
+                        m.trace(ctx, "decision_unknown", "action="+d.Action)
                         if d.Text != "" {
                                 m.send(d.Text)
                         } else {
@@ -203,10 +260,15 @@ USER MESSAGE:
                         return
                 }
         }
+        m.trace(ctx, "round_limit_hit", "4 rounds without resolution")
         m.send("🤔 Stopped after 4 clarification rounds — please rephrase your request with more detail.")
 }
 
+// SetNotifyStatus wires a callback the manager invokes when busy/idle changes.
+func (m *Manager) SetNotifyStatus(fn func()) { m.notifyStatus = fn }
+
 func (m *Manager) persistPlanAndQueue(ctx context.Context, summary string, phases []managerPlanPhase) {
+        m.trace(ctx, "persist_plan", fmt.Sprintf("phases=%d", len(phases)))
         if len(phases) == 0 {
                 m.send("⚠️ Plan was empty — nothing queued.")
                 return
