@@ -35,28 +35,16 @@ func main() {
         // ── Web server (start immediately so :5000 is reachable) ────────────
         webServer := web.New(database)
 
-        // ── LLM keys check ──────────────────────────────────────────────────
-        // Check before calling llm.New() — it panics when no keys are present.
+        // ── LLM key check ───────────────────────────────────────────────────
+        // DeepSeek is the only provider. llm.New() panics without a key, so
+        // gate it here and run UI-only when missing.
         llmCfg := llm.Config{
                 DeepSeekKey: os.Getenv("DEEPSEEK_API_KEY"),
-                NIMKey1:     os.Getenv("NIM_API_KEY_1"),
-                NIMKey2:     os.Getenv("NIM_API_KEY_2"),
         }
-        // Escape hatch: when LLM_DEEPSEEK_ONLY=1 we drop the (often slow / 429-prone)
-        // free NIM tier entirely and route every call straight to paid DeepSeek.
-        // Lets us isolate "is the agent stuck?" vs "is NIM stuck?" in one toggle.
-        if os.Getenv("LLM_DEEPSEEK_ONLY") == "1" {
-                llmCfg.NIMKey1 = ""
-                llmCfg.NIMKey2 = ""
-                log.Println("⚙️  LLM_DEEPSEEK_ONLY=1 — NIM disabled, routing only to DeepSeek paid")
-        }
-        if llmCfg.DeepSeekKey == "" && llmCfg.NIMKey1 == "" && llmCfg.NIMKey2 == "" {
-                log.Println("⚠️  No LLM API keys found — running in UI-only mode. Set DEEPSEEK_API_KEY or NIM_API_KEY_* to enable the agent.")
-                webServer.SetMOTD("⚠️ **Kaptaan needs an LLM API key to work.**\n\n" +
-                        "Set at least one of the following environment variables and restart:\n" +
-                        "- `DEEPSEEK_API_KEY`\n" +
-                        "- `NIM_API_KEY_1`\n" +
-                        "- `NIM_API_KEY_2`")
+        if llmCfg.DeepSeekKey == "" {
+                log.Println("⚠️  DEEPSEEK_API_KEY not set — running in UI-only mode.")
+                webServer.SetMOTD("⚠️ **Kaptaan needs the DeepSeek API key to work.**\n\n" +
+                        "Set `DEEPSEEK_API_KEY` and restart.")
                 go webServer.Start(ctx)
                 <-ctx.Done()
                 log.Println("👋 shutting down")

@@ -9,161 +9,102 @@ import (
         "log"
         "net/http"
         "strconv"
-        "strings"
         "sync"
         "time"
 )
 
 const (
-        deepseekURL = "https://api.deepseek.com/v1/chat/completions"
-        nimURL      = "https://integrate.api.nvidia.com/v1/chat/completions"
+        deepseekURL   = "https://api.deepseek.com/v1/chat/completions"
+        deepseekModel = "deepseek-chat" // V3, supports tool calls + JSON mode
 )
 
-// provider is a single LLM endpoint + key combo.
-type provider struct {
-        name   string
-        url    string
-        model  string
-        key    string
-        isPaid bool // true = DeepSeek (paid), false = NIM (free)
+// Retry policy: exponential backoff between attempts on transient failures.
+// Total wall-clock budget if all retries trigger: 0 + 3 + 6 + 12 = 21s of sleep
+// plus up to 4 × httpTimeout of work.
+var retryDelays = []time.Duration{
+        0,             // attempt 1: immediate
+        3 * time.Second,
+        6 * time.Second,
+        12 * time.Second,
+}
+
+const httpTimeout = 90 * time.Second
+
+// Pool is a thin wrapper over the DeepSeek chat completions API.
+// Single provider, retries with exponential backoff, cooldown on hard rate limits.
+type Pool struct {
+        key       string
+        http      *http.Client
+        onUsage   func(UsageRecord)
+        OnAllDown func() // called when we hit a long cooldown (rate limit / auth)
 
         mu       sync.Mutex
-        cooldown time.Time
+        cooldown time.Time // no calls allowed before this time
         failures int
 }
 
-func (p *provider) isAvailable() bool {
-        p.mu.Lock()
-        defer p.mu.Unlock()
-        return time.Now().After(p.cooldown)
-}
-
-// setCooldown sets a cooldown duration from now.
-func (p *provider) setCooldown(d time.Duration) {
-        p.mu.Lock()
-        defer p.mu.Unlock()
-        p.cooldown = time.Now().Add(d)
-        p.failures++
-}
-
-// setCooldownUntil sets cooldown to an absolute time.
-func (p *provider) setCooldownUntil(t time.Time) {
-        p.mu.Lock()
-        defer p.mu.Unlock()
-        p.cooldown = t
-        p.failures++
-}
-
-func (p *provider) resetFailures() {
-        p.mu.Lock()
-        defer p.mu.Unlock()
-        p.failures = 0
-}
-
-// Pool manages multiple LLM providers with automatic failover.
-// Priority: NIM (free) → DeepSeek (paid, only when NIM daily quota exhausted).
-type Pool struct {
-        providers []*provider
-        http      *http.Client
-        onUsage   func(UsageRecord)
-        OnAllDown func() // called when every provider is on cooldown
-}
-
-// Config holds API keys for the pool.
+// Config holds the API key. NIM is gone — DeepSeek is the only provider.
 type Config struct {
         DeepSeekKey string
-        NIMKey1     string
-        NIMKey2     string
 }
 
-// New creates a Pool from the given config.
-// Provider order: NIM1 → NIM2 → DeepSeek Pro → DeepSeek Flash.
-// NIM is always tried first since it's free.
+// New creates a Pool. Panics if no key is configured.
 func New(cfg Config, onUsage func(UsageRecord)) *Pool {
-        var providers []*provider
-
-        // ── Free tier first ────────────────────────────────────────────────
-        if cfg.NIMKey1 != "" {
-                providers = append(providers,
-                        &provider{name: "nim1-deepseek", url: nimURL,
-                                model: "deepseek-ai/deepseek-v4-pro", key: cfg.NIMKey1, isPaid: false},
-                        &provider{name: "nim1-glm", url: nimURL,
-                                model: "z-ai/glm-5.1", key: cfg.NIMKey1, isPaid: false},
-                )
+        if cfg.DeepSeekKey == "" {
+                panic("llm: DEEPSEEK_API_KEY is required")
         }
-        if cfg.NIMKey2 != "" {
-                providers = append(providers,
-                        &provider{name: "nim2-deepseek", url: nimURL,
-                                model: "deepseek-ai/deepseek-v4-pro", key: cfg.NIMKey2, isPaid: false},
-                        &provider{name: "nim2-glm", url: nimURL,
-                                model: "z-ai/glm-5.1", key: cfg.NIMKey2, isPaid: false},
-                )
-        }
-
-        // ── Paid fallback last ─────────────────────────────────────────────
-        if cfg.DeepSeekKey != "" {
-                // DeepSeek paid API exposes two production models: "deepseek-chat"
-                // (V3, general) and "deepseek-reasoner" (R1, slow but stronger).
-                // We default to deepseek-chat for everything — it supports tool
-                // calling + JSON mode and responds fast (typ. 5–20s).
-                providers = append(providers,
-                        &provider{name: "deepseek-chat", url: deepseekURL,
-                                model: "deepseek-chat", key: cfg.DeepSeekKey, isPaid: true},
-                )
-        }
-
-        if len(providers) == 0 {
-                panic("llm: no providers configured — set DEEPSEEK_API_KEY or NIM_API_KEY_*")
-        }
-
         if onUsage == nil {
                 onUsage = func(UsageRecord) {}
         }
-
         return &Pool{
-                providers: providers,
-                http:      &http.Client{Timeout: 120 * time.Second},
-                onUsage:   onUsage,
+                key:     cfg.DeepSeekKey,
+                http:    &http.Client{Timeout: httpTimeout},
+                onUsage: onUsage,
         }
 }
 
-// Chat sends messages to the best available provider, with tool support.
+// Chat sends messages to DeepSeek with optional tool calls.
 func (p *Pool) Chat(ctx context.Context, messages []Message, tools []Tool) (*Response, error) {
-        return p.call(ctx, messages, tools, false)
+        return p.callWithRetry(ctx, messages, tools, false)
 }
 
 // ChatJSON sends messages requesting a JSON-object response.
 func (p *Pool) ChatJSON(ctx context.Context, messages []Message) (*Response, error) {
-        return p.call(ctx, messages, nil, true)
+        return p.callWithRetry(ctx, messages, nil, true)
 }
 
-func (p *Pool) call(ctx context.Context, messages []Message, tools []Tool, jsonMode bool) (*Response, error) {
-        available := p.availableProviders()
-        if len(available) == 0 {
+// callWithRetry handles cooldown checks + exponential backoff over transient errors.
+func (p *Pool) callWithRetry(ctx context.Context, messages []Message, tools []Tool, jsonMode bool) (*Response, error) {
+        // Honor any active cooldown first (set by previous 429/auth/etc).
+        if wait := p.cooldownRemaining(); wait > 0 {
+                log.Printf("[llm] on cooldown, waiting %s", wait.Round(time.Second))
                 if p.OnAllDown != nil {
                         p.OnAllDown()
                 }
-                soonest := p.soonestAvailable()
-                wait := time.Until(soonest)
-                if wait > 0 {
-                        log.Printf("[llm] all providers on cooldown, waiting %s", wait.Round(time.Second))
+                select {
+                case <-time.After(wait):
+                case <-ctx.Done():
+                        return nil, ctx.Err()
+                }
+        }
+
+        var lastErr error
+        for attempt, delay := range retryDelays {
+                if delay > 0 {
+                        log.Printf("[llm] retry attempt %d after %s …", attempt+1, delay)
                         select {
-                        case <-time.After(wait):
+                        case <-time.After(delay):
                         case <-ctx.Done():
                                 return nil, ctx.Err()
                         }
                 }
-                available = p.availableProviders()
-        }
 
-        var lastErr error
-        for _, pr := range available {
-                resp, headers, err := p.callProvider(ctx, pr, messages, tools, jsonMode)
+                resp, headers, status, err := p.callOnce(ctx, messages, tools, jsonMode)
                 if err == nil {
-                        pr.resetFailures()
+                        p.resetFailures()
                         p.onUsage(UsageRecord{
-                                Provider:         pr.name,
-                                Model:            pr.model,
+                                Provider:         "deepseek",
+                                Model:            deepseekModel,
                                 PromptTokens:     resp.Usage.PromptTokens,
                                 CompletionTokens: resp.Usage.CompletionTokens,
                         })
@@ -171,110 +112,32 @@ func (p *Pool) call(ctx context.Context, messages []Message, tools []Tool, jsonM
                 }
 
                 lastErr = err
-                errStr := strings.ToLower(err.Error())
-                log.Printf("[llm] %s failed: %v", pr.name, err)
+                log.Printf("[llm] attempt %d/%d failed (http %d): %v", attempt+1, len(retryDelays), status, err)
 
-                p.applyCooldown(pr, errStr, headers)
-        }
-
-        return nil, fmt.Errorf("all LLM providers failed: %w", lastErr)
-}
-
-// applyCooldown sets the right cooldown based on provider type and error.
-//
-// NIM (free):
-//   - 429 → use Retry-After header if present, else 30s max (just RPM reset)
-//   - any other error → 24h (daily quota or hard error, skip for the day)
-//
-// DeepSeek (paid):
-//   - 429 → use Retry-After header if present, else 1h
-//   - 401/403 → 24h (bad key)
-//   - 502/503 → 5m (service blip)
-//   - timeout → 2m
-//   - other → 30s
-func (p *Pool) applyCooldown(pr *provider, errStr string, headers http.Header) {
-        is429 := strings.Contains(errStr, "429") || strings.Contains(errStr, "rate")
-        isAuth := strings.Contains(errStr, "401") || strings.Contains(errStr, "403")
-        isDown := strings.Contains(errStr, "503") || strings.Contains(errStr, "502")
-        isTimeout := strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline")
-        isQuota := strings.Contains(errStr, "quota") || strings.Contains(errStr, "insufficient") ||
-                strings.Contains(errStr, "billing") || strings.Contains(errStr, "limit exceeded")
-
-        if !pr.isPaid {
-                // ── NIM (free) ─────────────────────────────────────────────────
-                if is429 {
-                        // RPM limit — recover in seconds, not hours
-                        cd := retryAfterCooldown(headers, 30*time.Second)
-                        pr.setCooldownUntil(time.Now().Add(cd))
-                        log.Printf("[llm] %s RPM 429 → cooldown %s", pr.name, cd.Round(time.Second))
-                } else {
-                        // Any other error on NIM = daily quota hit or hard error
-                        // Drop this provider for the rest of the day
-                        until := tomorrowMidnight()
-                        pr.setCooldownUntil(until)
-                        log.Printf("[llm] %s hard error → dropped until %s (will try DeepSeek)",
-                                pr.name, until.Format("15:04"))
-                }
-                return
-        }
-
-        // ── DeepSeek (paid) ────────────────────────────────────────────────
-        switch {
-        case is429 || isQuota:
-                cd := retryAfterCooldown(headers, 1*time.Hour)
-                pr.setCooldownUntil(time.Now().Add(cd))
-                log.Printf("[llm] %s rate limited → cooldown %s", pr.name, cd.Round(time.Second))
-        case isAuth:
-                pr.setCooldown(24 * time.Hour)
-                log.Printf("[llm] %s auth error → 24h cooldown", pr.name)
-        case isDown:
-                pr.setCooldown(5 * time.Minute)
-                log.Printf("[llm] %s service down → 5m cooldown", pr.name)
-        case isTimeout:
-                pr.setCooldown(2 * time.Minute)
-                log.Printf("[llm] %s timeout → 2m cooldown", pr.name)
-        default:
-                pr.setCooldown(30 * time.Second)
-                log.Printf("[llm] %s unknown error → 30s cooldown", pr.name)
-        }
-}
-
-// retryAfterCooldown reads the Retry-After header (seconds) and returns
-// that duration capped at maxCap. Falls back to maxCap if header absent.
-func retryAfterCooldown(headers http.Header, maxCap time.Duration) time.Duration {
-        if headers == nil {
-                return maxCap
-        }
-        val := headers.Get("Retry-After")
-        if val == "" {
-                val = headers.Get("X-RateLimit-Reset-After") // NIM sometimes uses this
-        }
-        if val != "" {
-                if secs, err := strconv.Atoi(val); err == nil {
-                        d := time.Duration(secs) * time.Second
-                        if d > maxCap {
-                                return maxCap
+                // Hard errors (rate-limit, auth, billing) — stop retrying, set cooldown,
+                // surface error now. Classification is by HTTP status only, never by
+                // error-string substring.
+                if isHardStatus(status) {
+                        p.applyHardCooldown(status, headers)
+                        if p.OnAllDown != nil {
+                                p.OnAllDown()
                         }
-                        if d < 1*time.Second {
-                                return 1 * time.Second
-                        }
-                        return d
+                        break
                 }
+                // Transient (timeout, 5xx, network, parse) → continue to next backoff slot.
         }
-        return maxCap
+
+        return nil, fmt.Errorf("deepseek failed after %d attempts: %w", len(retryDelays), lastErr)
 }
 
-// tomorrowMidnight returns midnight of the next day in local time.
-func tomorrowMidnight() time.Time {
-        now := time.Now()
-        tomorrow := now.AddDate(0, 0, 1)
-        return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 0, 0, 0, 0, now.Location())
-}
-
-// callProvider makes one HTTP call and returns response + headers on error.
-func (p *Pool) callProvider(ctx context.Context, pr *provider, messages []Message, tools []Tool, jsonMode bool) (*Response, http.Header, error) {
+// callOnce fires one HTTP request to DeepSeek and returns the HTTP status code
+// alongside the parsed response and headers. statusCode is 0 when the failure
+// happened before we got an HTTP response (network error, timeout, marshal,
+// JSON parse error). Callers MUST classify retry policy on statusCode, not on
+// error-string substrings.
+func (p *Pool) callOnce(ctx context.Context, messages []Message, tools []Tool, jsonMode bool) (*Response, http.Header, int, error) {
         body := map[string]interface{}{
-                "model":       pr.model,
+                "model":       deepseekModel,
                 "messages":    messages,
                 "max_tokens":  8192,
                 "temperature": 0.7,
@@ -291,95 +154,129 @@ func (p *Pool) callProvider(ctx context.Context, pr *provider, messages []Messag
 
         b, err := json.Marshal(body)
         if err != nil {
-                return nil, nil, fmt.Errorf("marshal: %w", err)
+                return nil, nil, 0, fmt.Errorf("marshal: %w", err)
         }
 
-        req, err := http.NewRequestWithContext(ctx, "POST", pr.url, bytes.NewReader(b))
+        req, err := http.NewRequestWithContext(ctx, "POST", deepseekURL, bytes.NewReader(b))
         if err != nil {
-                return nil, nil, fmt.Errorf("build request: %w", err)
+                return nil, nil, 0, fmt.Errorf("build request: %w", err)
         }
         req.Header.Set("Content-Type", "application/json")
-        req.Header.Set("Authorization", "Bearer "+pr.key)
+        req.Header.Set("Authorization", "Bearer "+p.key)
 
         resp, err := p.http.Do(req)
         if err != nil {
-                return nil, nil, fmt.Errorf("http: %w", err)
+                return nil, nil, 0, fmt.Errorf("http: %w", err)
         }
         defer resp.Body.Close()
 
         data, err := io.ReadAll(resp.Body)
         if err != nil {
-                return nil, resp.Header, fmt.Errorf("read body: %w", err)
+                return nil, resp.Header, resp.StatusCode, fmt.Errorf("read body: %w", err)
         }
 
         if resp.StatusCode >= 400 {
-                return nil, resp.Header, fmt.Errorf("status %d: %s", resp.StatusCode, truncate(string(data), 200))
+                return nil, resp.Header, resp.StatusCode, fmt.Errorf("status %d: %s", resp.StatusCode, truncate(string(data), 200))
         }
 
         var result Response
         if err := json.Unmarshal(data, &result); err != nil {
-                return nil, resp.Header, fmt.Errorf("parse response: %w", err)
+                return nil, resp.Header, resp.StatusCode, fmt.Errorf("parse response: %w", err)
         }
         if result.Error != nil {
-                return nil, resp.Header, fmt.Errorf("api error: %s", result.Error.Message)
+                return nil, resp.Header, resp.StatusCode, fmt.Errorf("api error: %s", result.Error.Message)
         }
         if len(result.Choices) == 0 {
-                return nil, resp.Header, fmt.Errorf("empty choices in response")
+                return nil, resp.Header, resp.StatusCode, fmt.Errorf("empty choices in response")
         }
-
-        return &result, resp.Header, nil
+        return &result, resp.Header, resp.StatusCode, nil
 }
 
-// availableProviders returns providers not on cooldown, in priority order.
-func (p *Pool) availableProviders() []*provider {
-        var out []*provider
-        for _, pr := range p.providers {
-                if pr.isAvailable() {
-                        out = append(out, pr)
-                }
-        }
-        return out
+// isHardStatus identifies HTTP status codes where in-call retries are pointless.
+// These trigger a longer cooldown set on the pool. 402 = payment required (DeepSeek
+// uses this for insufficient balance); 429 = rate limit; 401/403 = auth.
+func isHardStatus(status int) bool {
+        return status == 401 || status == 403 || status == 402 || status == 429
 }
 
-// soonestAvailable returns the earliest cooldown expiry across all providers.
-func (p *Pool) soonestAvailable() time.Time {
-        soonest := time.Now().Add(24 * time.Hour)
-        for _, pr := range p.providers {
-                pr.mu.Lock()
-                cd := pr.cooldown
-                pr.mu.Unlock()
-                if cd.Before(soonest) {
-                        soonest = cd
-                }
+// applyHardCooldown sets the pool cooldown based on the HTTP status code.
+// Uses Retry-After header when present (capped). Concurrent failures keep
+// the LONGER cooldown — never downgrade an active long cooldown.
+func (p *Pool) applyHardCooldown(status int, headers http.Header) {
+        var cd time.Duration
+        switch status {
+        case 401, 403:
+                cd = 24 * time.Hour
+                log.Printf("[llm] auth error (http %d) → 24h cooldown (check DEEPSEEK_API_KEY)", status)
+        case 402:
+                cd = 1 * time.Hour
+                log.Printf("[llm] payment required (http 402) → 1h cooldown (top up DeepSeek balance)")
+        case 429:
+                cd = retryAfterCooldown(headers, 1*time.Hour)
+                log.Printf("[llm] rate limited (http 429) → cooldown %s", cd.Round(time.Second))
+        default:
+                cd = 30 * time.Second
         }
-        return soonest
+
+        until := time.Now().Add(cd)
+        p.mu.Lock()
+        if until.After(p.cooldown) {
+                p.cooldown = until
+        }
+        p.failures++
+        p.mu.Unlock()
 }
 
-// StatusReport returns a human-readable status of all providers.
+func (p *Pool) cooldownRemaining() time.Duration {
+        p.mu.Lock()
+        defer p.mu.Unlock()
+        return time.Until(p.cooldown)
+}
+
+func (p *Pool) resetFailures() {
+        p.mu.Lock()
+        p.failures = 0
+        p.mu.Unlock()
+}
+
+// retryAfterCooldown reads the Retry-After header (seconds) and returns
+// that duration capped at maxCap. Falls back to maxCap if header absent.
+func retryAfterCooldown(headers http.Header, maxCap time.Duration) time.Duration {
+        if headers == nil {
+                return maxCap
+        }
+        val := headers.Get("Retry-After")
+        if val == "" {
+                return maxCap
+        }
+        secs, err := strconv.Atoi(val)
+        if err != nil {
+                return maxCap
+        }
+        d := time.Duration(secs) * time.Second
+        if d > maxCap {
+                return maxCap
+        }
+        if d < 1*time.Second {
+                return 1 * time.Second
+        }
+        return d
+}
+
+// StatusReport returns a one-line human-readable status of the provider.
 func (p *Pool) StatusReport() string {
-        var sb strings.Builder
-        sb.WriteString("LLM Providers:\n")
+        p.mu.Lock()
+        cd := p.cooldown
+        failures := p.failures
+        p.mu.Unlock()
+
         now := time.Now()
-        for _, pr := range p.providers {
-                pr.mu.Lock()
-                cd := pr.cooldown
-                failures := pr.failures
-                pr.mu.Unlock()
-
-                tier := "free"
-                if pr.isPaid {
-                        tier = "paid"
-                }
-
-                if now.After(cd) {
-                        sb.WriteString(fmt.Sprintf("  ✅ %s (%s) [%s]\n", pr.name, pr.model, tier))
-                } else {
-                        remaining := time.Until(cd).Round(time.Second)
-                        sb.WriteString(fmt.Sprintf("  ❌ %s (%s) [%s] — cooldown %s, failures: %d\n",
-                                pr.name, pr.model, tier, remaining, failures))
-                }
+        if now.After(cd) {
+                return fmt.Sprintf("LLM Provider:\n  ✅ deepseek (%s) [paid]\n", deepseekModel)
         }
-        return sb.String()
+        remaining := time.Until(cd).Round(time.Second)
+        return fmt.Sprintf("LLM Provider:\n  ❌ deepseek (%s) [paid] — cooldown %s, failures: %d\n",
+                deepseekModel, remaining, failures)
 }
 
 func truncate(s string, n int) string {
