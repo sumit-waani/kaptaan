@@ -22,14 +22,19 @@ args = "Start application"
 name = "Start application"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "webview"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "./kaptaan"
-
-[workflows.workflow.metadata]
-outputType = "console"
+waitForPort = 5000
 
 [deployment]
 deploymentTarget = "vm"
 run = ["./kaptaan"]
 build = ["go", "build", "-o", "kaptaan", "./cmd/kaptaan"]
+
+[[ports]]
+localPort = 5000
+externalPort = 80

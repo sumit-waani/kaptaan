@@ -10,10 +10,10 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/cto-agent/cto-agent/internal/agent"
-	"github.com/cto-agent/cto-agent/internal/bot"
 	"github.com/cto-agent/cto-agent/internal/db"
 	"github.com/cto-agent/cto-agent/internal/llm"
 	"github.com/cto-agent/cto-agent/internal/tools"
+	"github.com/cto-agent/cto-agent/internal/web"
 )
 
 func main() {
@@ -38,7 +38,6 @@ func main() {
 		NIMKey1:     os.Getenv("NIM_API_KEY_1"),
 		NIMKey2:     os.Getenv("NIM_API_KEY_2"),
 	}, func(u llm.UsageRecord) {
-		// Persist token usage for /usage command
 		_ = database.RecordUsage(ctx, u.Provider, u.Model, u.PromptTokens, u.CompletionTokens)
 	})
 	log.Println("✅ LLM pool ready")
@@ -50,32 +49,28 @@ func main() {
 		GithubToken:  os.Getenv("GITHUB_TOKEN"),
 	}
 
-	// ── Telegram bot ─────────────────────────────────────────────────────
-	tgToken := mustEnv("TELEGRAM_BOT_TOKEN")
-	tgBot, err := bot.New(tgToken, database)
-	if err != nil {
-		log.Fatalf("bot: %v", err)
-	}
-	log.Println("✅ telegram bot ready")
+	// ── Web server ──────────────────────────────────────────────────────
+	webServer := web.New(database)
+	log.Println("✅ web server ready")
 
 	// ── Wire agent ──────────────────────────────────────────────────────
 	a := agent.New(
 		database,
 		pool,
 		executor,
-		tgBot.Send,
-		tgBot.Ask,
+		webServer.Send,
+		webServer.Ask,
 	)
 	pool.OnAllDown = func() {
-		tgBot.Send("⚠️ All LLM providers are on cooldown. Pausing agent until a provider recovers.")
+		webServer.Send("⚠️ All LLM providers are on cooldown. Pausing agent until a provider recovers.")
 		a.Pause(context.Background())
 	}
-	tgBot.SetAgent(a)
+	webServer.SetAgent(a)
 
 	// ── Start ────────────────────────────────────────────────────────────
-	log.Println("🚀 kaptaan starting...")
+	log.Println("🚀 kaptaan starting on :5000 ...")
 
-	go tgBot.Start(ctx)
+	go webServer.Start(ctx)
 	go a.Run(ctx)
 
 	<-ctx.Done()
