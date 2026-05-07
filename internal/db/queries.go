@@ -249,6 +249,31 @@ func (d *DB) ListDocs(ctx context.Context) ([]ProjectDoc, error) {
         return docs, rows.Err()
 }
 
+// GetAllDocsFull returns every project doc with its full raw_content for the
+// active project, oldest first (so the PRD/spec — usually uploaded first —
+// leads the prompt). Use this when you need the complete documentation rather
+// than chunked snippets, e.g. for the Builder's task prompt.
+func (d *DB) GetAllDocsFull(ctx context.Context) ([]ProjectDoc, error) {
+        rows, err := d.pool.Query(ctx,
+                `SELECT id, filename, raw_content, created_at
+                 FROM project_docs WHERE project_id=$1
+                 ORDER BY created_at ASC`,
+                d.ActiveProjectID(ctx))
+        if err != nil {
+                return nil, err
+        }
+        defer rows.Close()
+        var docs []ProjectDoc
+        for rows.Next() {
+                var doc ProjectDoc
+                if err := rows.Scan(&doc.ID, &doc.Filename, &doc.RawContent, &doc.CreatedAt); err != nil {
+                        return nil, err
+                }
+                docs = append(docs, doc)
+        }
+        return docs, rows.Err()
+}
+
 // ─── Plans ─────────────────────────────────────────────────────────────────
 
 func (d *DB) CreatePlan(ctx context.Context) (*Plan, error) {
