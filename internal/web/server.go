@@ -70,10 +70,11 @@ type Server struct {
         agent Agent
         hub   *sseHub
 
-        mu        sync.Mutex
-        pending   chan string
-        askActive bool
-        motd      string // shown to each new SSE client on connect
+        mu              sync.Mutex
+        pending         chan string
+        askActive       bool
+        pendingQuestion string // in-memory copy of active ask question
+        motd            string // shown to each new SSE client on connect
 }
 
 // New creates a new Server (does not listen yet).
@@ -102,15 +103,21 @@ func (s *Server) Send(text string) {
 }
 
 // Ask broadcasts a question event and blocks until the browser POSTs a reply.
+// The question is persisted to KV so it survives a server restart.
 func (s *Server) Ask(question string) string {
         s.mu.Lock()
         s.askActive = true
+        s.pendingQuestion = question
         s.mu.Unlock()
+
+        _ = s.db.KVSet(context.Background(), "pending_ask", question)
 
         defer func() {
                 s.mu.Lock()
                 s.askActive = false
+                s.pendingQuestion = ""
                 s.mu.Unlock()
+                _ = s.db.KVSet(context.Background(), "pending_ask", "")
                 s.hub.broadcast("event: ask_done\ndata: {}\n\n")
         }()
 
@@ -223,12 +230,25 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
                 flusher.Flush()
         }
 
-        // If agent is mid-Ask, tell the fresh client
+        // Re-broadcast any pending ask to the new client.
+        // Check in-memory first (ask is live in this process); fall back to KV
+        // which survives server restarts.
+        persistedAsk := s.db.KVGetDefault(r.Context(), "pending_ask", "")
         s.mu.Lock()
         active := s.askActive
+        question := s.pendingQuestion
         s.mu.Unlock()
+
         if active {
-                fmt.Fprint(w, "event: ask_active\ndata: {}\n\n")
+                // Ask is live right now — resend the actual question text.
+                fmt.Fprint(w, s.sseMsg("ask", question))
+                flusher.Flush()
+        } else if persistedAsk != "" {
+                // Server restarted while agent was mid-ask — let the user know and
+                // surface the question so they can still reply once the agent loop
+                // re-issues it.
+                fmt.Fprint(w, s.sseMsg("message", "🔄 Reconnected — agent is resuming. Pending question:"))
+                fmt.Fprint(w, s.sseMsg("ask", persistedAsk))
                 flusher.Flush()
         }
 
