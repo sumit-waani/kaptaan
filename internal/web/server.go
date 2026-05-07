@@ -156,21 +156,27 @@ func (s *Server) broadcastStatus(ctx context.Context) {
 func (s *Server) Start(ctx context.Context) {
         mux := http.NewServeMux()
 
+        // Public — no session required
         mux.HandleFunc("/", s.handleIndex)
-        mux.HandleFunc("/events", s.handleSSE)
+        mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
+        mux.HandleFunc("/api/auth/setup", s.handleAuthSetup)
+        mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
+        mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
 
-        mux.HandleFunc("/api/status", s.handleStatus)
-        mux.HandleFunc("/api/score", s.handleScore)
-        mux.HandleFunc("/api/tasks", s.handleTasks)
-        mux.HandleFunc("/api/log", s.handleLog)
-        mux.HandleFunc("/api/usage", s.handleUsage)
-        mux.HandleFunc("/api/clear", s.handleClear)
-        mux.HandleFunc("/api/scan", s.handleScan)
-        mux.HandleFunc("/api/pause", s.handlePause)
-        mux.HandleFunc("/api/resume", s.handleResume)
-        mux.HandleFunc("/api/replan", s.handleReplan)
-        mux.HandleFunc("/api/reply", s.handleReply)
-        mux.HandleFunc("/api/upload", s.handleUpload)
+        // Protected — valid session cookie required
+        mux.HandleFunc("/events", s.requireAuth(s.handleSSE))
+        mux.HandleFunc("/api/status", s.requireAuth(s.handleStatus))
+        mux.HandleFunc("/api/score", s.requireAuth(s.handleScore))
+        mux.HandleFunc("/api/tasks", s.requireAuth(s.handleTasks))
+        mux.HandleFunc("/api/log", s.requireAuth(s.handleLog))
+        mux.HandleFunc("/api/usage", s.requireAuth(s.handleUsage))
+        mux.HandleFunc("/api/clear", s.requireAuth(s.handleClear))
+        mux.HandleFunc("/api/scan", s.requireAuth(s.handleScan))
+        mux.HandleFunc("/api/pause", s.requireAuth(s.handlePause))
+        mux.HandleFunc("/api/resume", s.requireAuth(s.handleResume))
+        mux.HandleFunc("/api/replan", s.requireAuth(s.handleReplan))
+        mux.HandleFunc("/api/reply", s.requireAuth(s.handleReply))
+        mux.HandleFunc("/api/upload", s.requireAuth(s.handleUpload))
 
         srv := &http.Server{
                 Addr:    "0.0.0.0:5000",

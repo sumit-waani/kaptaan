@@ -2,436 +2,753 @@ package web
 
 import "strings"
 
-// indexHTML is the single-page UI. We build it at init time so we can embed
-// the backtick character (which cannot appear inside a Go raw string literal).
+// indexHTML is the single-page UI built at init time so we can embed backticks.
 var indexHTML string
 
 func init() {
         indexHTML = strings.ReplaceAll(rawHTML, "BTICK", "`")
 }
 
-// rawHTML uses the placeholder BTICK wherever a literal backtick is needed.
 const rawHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Kaptaan — CTO Agent</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="theme-color" content="#0d1117"/>
+  <title>Kaptaan</title>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12/dist/htmx.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
   <style>
     :root {
-      --bg:      #0d1117;
-      --surface: #161b22;
-      --border:  #30363d;
-      --text:    #e6edf3;
-      --muted:   #8b949e;
-      --accent:  #58a6ff;
-      --green:   #3fb950;
-      --yellow:  #d29922;
-      --red:     #f85149;
-      --purple:  #bc8cff;
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --surface2:  #1c2128;
+      --border:    #30363d;
+      --text:      #e6edf3;
+      --muted:     #8b949e;
+      --accent:    #58a6ff;
+      --green:     #3fb950;
+      --yellow:    #d29922;
+      --red:       #f85149;
+      --purple:    #bc8cff;
+      --safe-top:    env(safe-area-inset-top,    0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left:   env(safe-area-inset-left,   0px);
+      --safe-right:  env(safe-area-inset-right,  0px);
     }
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; }
+
+    *, *::before, *::after {
+      box-sizing: border-box; margin: 0; padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html {
+      height: 100%; height: -webkit-fill-available;
+      overscroll-behavior: none;
+    }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg); color: var(--text);
-      display: flex; flex-direction: column; overflow: hidden;
+      font-size: 16px; line-height: 1.5;
+      min-height: 100vh; min-height: -webkit-fill-available;
+      min-height: 100dvh;
+      display: flex; flex-direction: column;
+      overflow: hidden;
     }
 
-    /* Header */
-    header {
-      flex-shrink: 0; background: var(--surface);
+    /* ── Auth screens ─────────────────────────────────────────── */
+    .auth-wrap {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: calc(var(--safe-top) + 32px) 24px calc(var(--safe-bottom) + 32px);
+      background: var(--bg);
+    }
+
+    .auth-logo {
+      font-size: 48px; margin-bottom: 8px; line-height: 1;
+    }
+
+    .auth-name {
+      font-size: 26px; font-weight: 700; letter-spacing: -0.5px;
+      color: var(--text); margin-bottom: 4px;
+    }
+
+    .auth-sub {
+      font-size: 14px; color: var(--muted); margin-bottom: 40px; text-align: center;
+    }
+
+    .auth-card {
+      width: 100%; max-width: 360px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 16px; padding: 28px 24px;
+    }
+
+    .auth-title {
+      font-size: 20px; font-weight: 700; margin-bottom: 20px; color: var(--text);
+    }
+
+    .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+
+    .field label {
+      font-size: 13px; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+
+    .field input {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 16px;
+      color: var(--text); font-size: 16px; font-family: inherit;
+      outline: none; width: 100%;
+      transition: border-color 0.15s;
+      -webkit-appearance: none; appearance: none;
+    }
+
+    .field input:focus { border-color: var(--accent); }
+
+    .auth-error {
+      background: rgba(248,81,73,0.12); border: 1px solid rgba(248,81,73,0.3);
+      color: var(--red); border-radius: 8px; padding: 10px 14px;
+      font-size: 14px; margin-bottom: 16px;
+    }
+
+    .auth-btn {
+      width: 100%; padding: 15px; border-radius: 12px; border: none;
+      background: var(--accent); color: #fff; font-size: 16px;
+      font-weight: 700; font-family: inherit; cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+      margin-top: 4px;
+    }
+    .auth-btn:active { transform: scale(0.98); opacity: 0.85; }
+    .auth-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+    .auth-loading-wrap {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+    }
+    .spinner {
+      width: 36px; height: 36px; border: 3px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── App layout ───────────────────────────────────────────── */
+    .app {
+      flex: 1; display: flex; flex-direction: column;
+      overflow: hidden; position: relative;
+    }
+
+    /* ── Header ───────────────────────────────────────────────── */
+    .app-header {
+      flex-shrink: 0;
+      background: var(--surface);
       border-bottom: 1px solid var(--border);
-      padding: 10px 20px; display: flex; align-items: center; gap: 10px;
-    }
-    header h1 { font-size: 1rem; font-weight: 800; letter-spacing: .05em; color: var(--accent); }
-    .chip {
-      padding: 2px 10px; border-radius: 20px; font-size: .7rem;
-      font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
-    }
-    .chip-state { border: 1px solid var(--yellow); color: var(--yellow); }
-    .chip-trust { border: 1px solid var(--green);  color: var(--green);  }
-    .spacer { flex: 1; }
-    .dot { font-size: .7rem; }
-    .dot-live { color: var(--green); }
-    .dot-off  { color: var(--red); }
-
-    /* Layout */
-    .layout { flex: 1; display: flex; overflow: hidden; }
-
-    /* Feed */
-    .feed {
-      flex: 1; overflow-y: auto; padding: 16px;
-      display: flex; flex-direction: column; gap: 8px; scroll-behavior: smooth;
-    }
-    .feed::-webkit-scrollbar { width: 6px; }
-    .feed::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-    .msg {
-      padding: 10px 14px; border-radius: 8px; line-height: 1.65;
-      font-size: .875rem; word-break: break-word; max-width: 100%;
-    }
-    .msg-agent { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); }
-    .msg-ask   { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--purple); }
-    .msg-reply { background: #1a2a1a; border: 1px solid #2a3f2a; border-left: 3px solid var(--green); }
-    .msg-ts { font-size: .68rem; color: var(--muted); margin-bottom: 4px; }
-    .history-sep {
+      padding-top: calc(var(--safe-top) + 10px);
+      padding-bottom: 10px;
+      padding-left: calc(var(--safe-left) + 16px);
+      padding-right: calc(var(--safe-right) + 16px);
       display: flex; align-items: center; gap: 10px;
-      font-size: .7rem; color: var(--muted); padding: 4px 0;
+    }
+
+    .header-state {
+      display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+    }
+
+    .state-chip {
+      display: inline-flex; align-items: center;
+      padding: 4px 10px; border-radius: 20px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+      text-transform: uppercase; flex-shrink: 0;
+      background: rgba(88,166,255,0.15); color: var(--accent);
+    }
+    .state-chip.executing { background: rgba(63,185,80,0.15); color: var(--green); }
+    .state-chip.clarifying { background: rgba(188,140,255,0.15); color: var(--purple); }
+    .state-chip.planning { background: rgba(210,153,34,0.15); color: var(--yellow); }
+    .state-chip.error { background: rgba(248,81,73,0.15); color: var(--red); }
+
+    .header-trust {
+      font-size: 13px; font-weight: 600; color: var(--muted);
+      flex-shrink: 0;
+    }
+
+    .header-project {
+      font-size: 14px; color: var(--muted); flex: 1;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      text-align: center;
+    }
+
+    .icon-btn {
+      background: none; border: none; cursor: pointer; color: var(--muted);
+      width: 44px; height: 44px; border-radius: 22px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; transition: background 0.15s, color 0.15s;
+    }
+    .icon-btn:active { background: var(--surface2); color: var(--text); }
+    .icon-btn svg { width: 22px; height: 22px; }
+
+    /* ── Message feed ─────────────────────────────────────────── */
+    .feed {
+      flex: 1; overflow-y: auto; overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
+      padding: 16px 16px 8px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+
+    .msg-row { display: flex; flex-direction: column; max-width: 88%; }
+    .msg-row.agent { align-self: flex-start; }
+    .msg-row.user-row { align-self: flex-end; }
+
+    .msg-bubble {
+      padding: 11px 15px; border-radius: 18px;
+      font-size: 15px; line-height: 1.55; word-break: break-word;
+    }
+    .msg-bubble.message {
+      background: var(--surface); border: 1px solid var(--border);
+      border-bottom-left-radius: 4px; color: var(--text);
+    }
+    .msg-bubble.ask {
+      background: rgba(188,140,255,0.12); border: 1px solid rgba(188,140,255,0.25);
+      border-bottom-left-radius: 4px; color: var(--text);
+    }
+    .msg-bubble.reply {
+      background: rgba(63,185,80,0.15); border: 1px solid rgba(63,185,80,0.2);
+      border-bottom-right-radius: 4px; color: var(--text);
+    }
+    .msg-bubble.history {
+      opacity: 0.65;
+    }
+
+    .msg-ts {
+      font-size: 11px; color: var(--muted); margin-top: 4px;
+      padding: 0 4px;
+    }
+    .msg-row.user-row .msg-ts { text-align: right; }
+
+    /* Markdown inside bubbles */
+    .msg-bubble p { margin: 0 0 8px; }
+    .msg-bubble p:last-child { margin-bottom: 0; }
+    .msg-bubble code {
+      background: rgba(255,255,255,0.08); padding: 2px 5px;
+      border-radius: 4px; font-size: 13px; font-family: 'SF Mono', monospace;
+    }
+    .msg-bubble pre {
+      background: rgba(0,0,0,0.3); border-radius: 8px; padding: 10px 12px;
+      overflow-x: auto; margin: 6px 0; font-size: 13px;
+    }
+    .msg-bubble pre code { background: none; padding: 0; }
+    .msg-bubble ul, .msg-bubble ol { padding-left: 20px; margin: 4px 0; }
+    .msg-bubble strong { color: #fff; }
+
+    .history-sep {
+      display: flex; align-items: center; gap: 8px;
+      color: var(--muted); font-size: 12px; padding: 4px 0;
     }
     .history-sep::before, .history-sep::after {
       content: ''; flex: 1; height: 1px; background: var(--border);
     }
 
-    /* Markdown inside messages */
-    .msg code { background: #1c2128; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: .82em; }
-    .msg pre  { background: #1c2128; padding: 10px; border-radius: 6px; overflow-x: auto; margin: 6px 0; }
-    .msg pre code { background: none; padding: 0; }
-    .msg p    { margin: 3px 0; }
-    .msg ul, .msg ol { margin: 4px 0 4px 20px; }
-    .msg strong { color: var(--text); }
-    .msg a      { color: var(--accent); }
-
-    /* Sidebar */
-    .sidebar {
-      width: 256px; flex-shrink: 0; border-left: 1px solid var(--border);
-      background: var(--surface); overflow-y: auto; padding: 14px;
-      display: flex; flex-direction: column; gap: 18px;
-    }
-    .sidebar h3 {
-      font-size: .68rem; text-transform: uppercase;
-      letter-spacing: .1em; color: var(--muted); margin-bottom: 8px;
-    }
-    .stat { display: flex; justify-content: space-between; font-size: .82rem; margin-bottom: 5px; }
-    .stat-val { color: var(--accent); font-weight: 600; }
-    .trust-bar  { height: 4px; background: var(--border); border-radius: 2px; margin: 5px 0 8px; }
-    .trust-fill { height: 100%; background: var(--green); border-radius: 2px; transition: width .5s; }
-    .cmd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-    .cmd-btn {
-      padding: 7px 6px; border-radius: 6px; border: 1px solid var(--border);
-      background: var(--bg); color: var(--text); font-size: .78rem; cursor: pointer;
-      text-align: center; transition: background .15s, border-color .15s;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .cmd-btn:hover  { background: var(--border); }
-    .cmd-btn:active { background: #3a3f4a; }
-    .cmd-btn.danger { border-color: var(--red); color: var(--red); }
-    .cmd-btn.danger:hover { background: #1e0d0d; }
-    .upload-zone {
-      border: 2px dashed var(--border); border-radius: 8px; padding: 14px 10px;
-      text-align: center; cursor: pointer; font-size: .78rem; color: var(--muted);
-      transition: all .15s; user-select: none;
-    }
-    .upload-zone.drag { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.07); }
-    .upload-zone input[type=file] { display: none; }
-
-    /* Bottom bar */
+    /* ── Bottom bar ───────────────────────────────────────────── */
     .bottom-bar {
-      flex-shrink: 0; border-top: 1px solid var(--border); background: var(--surface);
-      padding: 10px 14px; display: flex; gap: 10px; align-items: flex-end;
+      flex-shrink: 0;
+      background: var(--surface); border-top: 1px solid var(--border);
+      padding: 8px calc(var(--safe-right) + 8px) calc(var(--safe-bottom) + 8px) calc(var(--safe-left) + 8px);
+      display: flex; align-items: flex-end; gap: 8px;
     }
-    .ask-hint { font-size: .72rem; color: var(--purple); margin-bottom: 4px; }
-    .reply-wrap { flex: 1; display: flex; flex-direction: column; }
+
     .reply-input {
       flex: 1; background: var(--bg); border: 1px solid var(--border);
-      border-radius: 6px; padding: 9px 13px; color: var(--text); font-size: .875rem;
-      font-family: inherit; outline: none; resize: none; transition: border-color .15s;
+      border-radius: 22px; padding: 11px 16px;
+      color: var(--text); font-size: 16px; font-family: inherit;
+      outline: none; resize: none; max-height: 120px; overflow-y: auto;
+      line-height: 1.4; transition: border-color 0.15s;
+      -webkit-overflow-scrolling: touch;
+      display: block; width: 100%;
     }
-    .reply-input:focus    { border-color: var(--accent); }
-    .reply-input:disabled { opacity: .35; cursor: not-allowed; }
-    .reply-btn {
-      padding: 9px 20px; background: var(--accent); color: #0d1117;
-      border: none; border-radius: 6px; font-weight: 700; font-size: .875rem;
-      cursor: pointer; transition: opacity .15s; align-self: flex-end;
+    .reply-input:focus { border-color: var(--accent); }
+    .reply-input:disabled { opacity: 0.4; cursor: not-allowed; }
+    .reply-input::placeholder { color: var(--muted); }
+
+    .send-btn {
+      width: 44px; height: 44px; border-radius: 22px; border: none;
+      background: var(--accent); color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; flex-shrink: 0;
+      transition: opacity 0.15s, transform 0.1s;
     }
-    .reply-btn:disabled { opacity: .35; cursor: not-allowed; }
-    .reply-btn:hover:not(:disabled) { opacity: .85; }
+    .send-btn:active { transform: scale(0.92); }
+    .send-btn:disabled { opacity: 0.3; cursor: not-allowed; transform: none; }
+    .send-btn svg { width: 20px; height: 20px; }
+
+    /* ── Command sheet ────────────────────────────────────────── */
+    .backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+      z-index: 100; backdrop-filter: blur(2px);
+      -webkit-backdrop-filter: blur(2px);
+    }
+
+    .sheet {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      background: var(--surface); border-radius: 20px 20px 0 0;
+      border-top: 1px solid var(--border);
+      z-index: 101;
+      transform: translateY(100%);
+      transition: transform 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+      max-height: 85vh; overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: calc(var(--safe-bottom) + 8px);
+    }
+    .sheet.open { transform: translateY(0); }
+
+    .sheet-handle {
+      width: 36px; height: 4px; background: var(--border);
+      border-radius: 2px; margin: 12px auto 8px;
+    }
+
+    .sheet-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 16px 12px; border-bottom: 1px solid var(--border);
+    }
+    .sheet-title { font-size: 17px; font-weight: 700; }
+
+    .sheet-section { padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .sheet-section:last-child { border-bottom: none; }
+
+    .sheet-label {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--muted);
+      padding: 8px 16px 4px;
+    }
+
+    .sheet-cmd {
+      display: flex; align-items: center; gap: 14px;
+      width: 100%; padding: 14px 16px; background: none; border: none;
+      color: var(--text); font-size: 16px; font-family: inherit;
+      cursor: pointer; text-align: left;
+      transition: background 0.12s;
+      min-height: 54px;
+    }
+    .sheet-cmd:active { background: var(--surface2); }
+    .sheet-cmd .cmd-icon { font-size: 20px; width: 28px; text-align: center; flex-shrink: 0; }
+    .sheet-cmd .cmd-label { flex: 1; }
+    .sheet-cmd .cmd-desc { font-size: 13px; color: var(--muted); }
+
+    .sheet-cmd.danger { color: var(--red); }
+
+    /* ── Upload indicator ─────────────────────────────────────── */
+    .upload-badge {
+      position: absolute; top: -4px; right: -4px;
+      width: 10px; height: 10px; background: var(--accent);
+      border-radius: 50%; border: 2px solid var(--surface);
+    }
+    .upload-wrap { position: relative; flex-shrink: 0; }
+
+    /* ── Connected dot ────────────────────────────────────────── */
+    .conn-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--muted); flex-shrink: 0;
+      transition: background 0.3s;
+    }
+    .conn-dot.live { background: var(--green); }
+
+    [x-cloak] { display: none !important; }
   </style>
 </head>
-<body x-data="app()" x-init="init()">
+<body x-data="kaptaan()" x-init="init()" x-cloak>
 
-  <!-- Header -->
-  <header>
-    <h1>🤖 KAPTAAN</h1>
-    <span class="chip chip-state" x-text="status.state || 'connecting'"></span>
-    <span class="chip chip-trust" x-text="(status.trust||0).toFixed(1) + '%'"></span>
-    <span style="font-size:.82rem;color:var(--muted)" x-text="status.project"></span>
-    <span class="spacer"></span>
-    <span class="dot" :class="connected ? 'dot-live' : 'dot-off'" x-text="connected ? '● live' : '● offline'"></span>
-  </header>
-
-  <div class="layout">
-
-    <!-- Message Feed -->
-    <div class="feed" id="feed">
-      <template x-for="(m, i) in messages" :key="i">
-        <template x-if="m.type === 'separator'">
-          <div class="history-sep" x-text="m.text"></div>
-        </template>
-        <template x-if="m.type !== 'separator'">
-          <div class="msg" :class="msgClass(m.type)">
-            <div class="msg-ts" x-text="m.ts"></div>
-            <div x-html="renderMd(m.text)"></div>
-          </div>
-        </template>
-      </template>
-      <div id="feed-end" style="height:1px"></div>
-    </div>
-
-    <!-- Sidebar -->
-    <aside class="sidebar">
-
-      <!-- Status -->
-      <div>
-        <h3>Status</h3>
-        <div class="stat"><span>State</span><span class="stat-val" x-text="status.state || '—'"></span></div>
-        <div class="stat"><span>Trust</span><span class="stat-val" x-text="(status.trust||0).toFixed(1)+'%'"></span></div>
-        <div class="trust-bar"><div class="trust-fill" :style="'width:'+Math.min(status.trust||0,100)+'%'"></div></div>
-        <div class="stat" style="align-items:flex-start">
-          <span>Plan</span>
-          <span class="stat-val" style="font-size:.72rem;text-align:right;max-width:140px" x-text="status.plan || '—'"></span>
-        </div>
-      </div>
-
-      <!-- Commands -->
-      <div>
-        <h3>Commands</h3>
-        <div class="cmd-grid">
-          <button class="cmd-btn" @click="cmd('status')">📊 Status</button>
-          <button class="cmd-btn" @click="cmd('score')">🎯 Score</button>
-          <button class="cmd-btn" @click="cmd('tasks')">📋 Tasks</button>
-          <button class="cmd-btn" @click="cmd('log')">📜 Log</button>
-          <button class="cmd-btn" @click="cmd('usage')">📈 Usage</button>
-          <button class="cmd-btn" @click="post('scan')">🔍 Scan</button>
-          <button class="cmd-btn" @click="post('pause')">⏸ Pause</button>
-          <button class="cmd-btn" @click="post('resume')">▶ Resume</button>
-          <button class="cmd-btn" @click="post('replan')">🔄 Replan</button>
-          <button class="cmd-btn danger" @click="post('clear')">🧹 Clear</button>
-        </div>
-      </div>
-
-      <!-- Upload -->
-      <div>
-        <h3>Upload Docs</h3>
-        <div
-          class="upload-zone"
-          :class="{ drag: dragging }"
-          @dragover.prevent="dragging = true"
-          @dragleave.prevent="dragging = false"
-          @drop.prevent="handleDrop($event)"
-          @click="$refs.fileInput.click()"
-        >
-          <input type="file" accept=".md" x-ref="fileInput" @change="handleFile($event)"/>
-          <div x-show="!uploading">📄 Drop a <strong>.md</strong> file<br><small style="color:var(--muted)">or click to browse</small></div>
-          <div x-show="uploading" style="color:var(--yellow)">⏳ Uploading…</div>
-        </div>
-      </div>
-
-    </aside>
+  <!-- ── Loading ─────────────────────────────────────────────── -->
+  <div x-show="screen==='loading'" class="auth-loading-wrap">
+    <div class="spinner"></div>
   </div>
 
-  <!-- Bottom bar -->
-  <div class="bottom-bar">
-    <div class="reply-wrap">
-      <div class="ask-hint" x-show="askActive" style="display:none">💬 Agent is waiting for your reply</div>
+  <!-- ── Setup / Login ───────────────────────────────────────── -->
+  <div x-show="screen==='setup'||screen==='login'" class="auth-wrap">
+    <div class="auth-logo">🤖</div>
+    <div class="auth-name">Kaptaan</div>
+    <div class="auth-sub" x-text="screen==='setup' ? 'Your autonomous CTO agent' : 'Welcome back'"></div>
+
+    <div class="auth-card">
+      <div class="auth-title" x-text="screen==='setup' ? 'Create account' : 'Sign in'"></div>
+      <form @submit.prevent="submitAuth()">
+        <div class="field">
+          <label>Username</label>
+          <input type="text" x-model="authUser"
+            autocomplete="username" autocapitalize="off"
+            autocorrect="off" spellcheck="false"
+            placeholder="choose a username"
+            :disabled="authBusy"/>
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input type="password" x-model="authPass"
+            :autocomplete="screen==='setup' ? 'new-password' : 'current-password'"
+            :placeholder="screen==='setup' ? 'min 6 characters' : 'your password'"
+            :disabled="authBusy"/>
+        </div>
+        <div class="auth-error" x-show="authErr" x-text="authErr"></div>
+        <button type="submit" class="auth-btn" :disabled="authBusy||!authUser||!authPass">
+          <span x-show="!authBusy" x-text="screen==='setup' ? 'Create account' : 'Sign in'"></span>
+          <span x-show="authBusy">...</span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── App ─────────────────────────────────────────────────── -->
+  <div x-show="screen==='app'" class="app">
+
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-state">
+        <div class="conn-dot" :class="connected?'live':''"></div>
+        <span class="state-chip"
+          :class="(status.state||'').toLowerCase()"
+          x-text="status.state||'idle'"></span>
+        <span class="header-trust"
+          x-show="status.trust>0"
+          x-text="Math.round(status.trust)+'%'"></span>
+      </div>
+      <div class="header-project" x-text="status.project||'Kaptaan'"></div>
+      <button class="icon-btn" @click="showMenu=true" aria-label="Commands">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="8" x2="21" y2="8"/>
+          <line x1="3" y1="16" x2="21" y2="16"/>
+        </svg>
+      </button>
+    </header>
+
+    <!-- Feed -->
+    <div class="feed" id="feed" x-ref="feed">
+      <template x-for="(m, i) in messages" :key="i">
+        <div>
+          <!-- Separator -->
+          <div x-show="m.type==='separator'" class="history-sep" x-text="m.text"></div>
+          <!-- Message bubble -->
+          <div x-show="m.type!=='separator'"
+            class="msg-row"
+            :class="m.type==='reply' ? 'user-row' : 'agent'">
+            <div class="msg-bubble"
+              :class="[m.type, m.history?'history':'']"
+              x-html="renderMsg(m.text)"></div>
+            <div class="msg-ts" x-text="m.ts"></div>
+          </div>
+        </div>
+      </template>
+      <div id="feed-end"></div>
+    </div>
+
+    <!-- Bottom bar -->
+    <div class="bottom-bar">
+      <div class="upload-wrap">
+        <button class="icon-btn" @click="$refs.fileIn.click()" :disabled="uploading" aria-label="Upload doc">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
+          </svg>
+        </button>
+        <div class="upload-badge" x-show="uploading"></div>
+      </div>
+      <input type="file" accept=".md" x-ref="fileIn" @change="uploadDoc($event)" style="display:none"/>
+
       <textarea
         class="reply-input"
-        rows="1"
-        :placeholder="askActive ? 'Type your reply and press Enter or Send…' : 'Waiting for agent question…'"
-        :disabled="!askActive"
         x-model="replyText"
+        x-ref="replyInput"
+        :placeholder="askActive ? 'Type your reply…' : 'Waiting for agent…'"
+        :disabled="!askActive"
+        rows="1"
+        @input="autoResize($el)"
         @keydown.enter.prevent="if(askActive && replyText.trim()) sendReply()"
       ></textarea>
+
+      <button class="send-btn"
+        :disabled="!askActive||!replyText.trim()"
+        @click="sendReply()"
+        aria-label="Send">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"/>
+          <polygon points="22 2 15 22 11 13 2 9 22 2" fill="currentColor" stroke="none"/>
+        </svg>
+      </button>
     </div>
-    <button class="reply-btn" :disabled="!askActive || !replyText.trim()" @click="sendReply()">Send</button>
+  </div>
+
+  <!-- ── Command sheet backdrop ──────────────────────────────── -->
+  <div x-show="showMenu" class="backdrop" @click="showMenu=false"
+    x-transition:enter="transition ease-out duration-200"
+    x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+    x-transition:leave="transition ease-in duration-150"
+    x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+
+  <!-- ── Command sheet ───────────────────────────────────────── -->
+  <div class="sheet" :class="showMenu ? 'open' : ''">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+      <span class="sheet-title">Commands</span>
+      <button class="icon-btn" @click="showMenu=false" aria-label="Close">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="sheet-section">
+      <div class="sheet-label">Info</div>
+      <button class="sheet-cmd" @click="cmd('/api/status','status')">
+        <span class="cmd-icon">📊</span>
+        <span class="cmd-label">Status</span>
+        <span class="cmd-desc">Agent state</span>
+      </button>
+      <button class="sheet-cmd" @click="cmd('/api/score','score')">
+        <span class="cmd-icon">🎯</span>
+        <span class="cmd-label">Trust score</span>
+        <span class="cmd-desc">Clarification progress</span>
+      </button>
+      <button class="sheet-cmd" @click="cmd('/api/tasks','tasks')">
+        <span class="cmd-icon">📋</span>
+        <span class="cmd-label">Tasks</span>
+        <span class="cmd-desc">Current plan</span>
+      </button>
+      <button class="sheet-cmd" @click="cmd('/api/log','log')">
+        <span class="cmd-icon">📜</span>
+        <span class="cmd-label">Log</span>
+        <span class="cmd-desc">Recent events</span>
+      </button>
+      <button class="sheet-cmd" @click="cmd('/api/usage','usage')">
+        <span class="cmd-icon">📈</span>
+        <span class="cmd-label">Usage</span>
+        <span class="cmd-desc">LLM token usage</span>
+      </button>
+    </div>
+
+    <div class="sheet-section">
+      <div class="sheet-label">Actions</div>
+      <button class="sheet-cmd" @click="cmd('/api/scan','scan')">
+        <span class="cmd-icon">🔍</span>
+        <span class="cmd-label">Scan repo</span>
+        <span class="cmd-desc">Find gaps &amp; bugs</span>
+      </button>
+      <button class="sheet-cmd" @click="cmd('/api/pause','pause')">
+        <span class="cmd-icon">⏸</span>
+        <span class="cmd-label">Pause</span>
+        <span class="cmd-desc">Pause the agent</span>
+      </button>
+      <button class="sheet-cmd" @click="cmd('/api/resume','resume')">
+        <span class="cmd-icon">▶</span>
+        <span class="cmd-label">Resume</span>
+        <span class="cmd-desc">Resume the agent</span>
+      </button>
+      <button class="sheet-cmd" @click="cmd('/api/replan','replan')">
+        <span class="cmd-icon">🔄</span>
+        <span class="cmd-label">Replan</span>
+        <span class="cmd-desc">Regenerate the plan</span>
+      </button>
+    </div>
+
+    <div class="sheet-section">
+      <div class="sheet-label">Danger</div>
+      <button class="sheet-cmd" @click="cmd('/api/clear','clear')">
+        <span class="cmd-icon">🧹</span>
+        <span class="cmd-label">Clear history</span>
+        <span class="cmd-desc">Wipe message feed</span>
+      </button>
+      <button class="sheet-cmd danger" @click="logout()">
+        <span class="cmd-icon">🚪</span>
+        <span class="cmd-label">Logout</span>
+      </button>
+    </div>
   </div>
 
 <script>
-function app() {
+function kaptaan() {
   return {
+    // ── Auth state ───────────────────────────────────────────────
+    screen:   'loading',   // loading | setup | login | app
+    authUser: '',
+    authPass: '',
+    authErr:  '',
+    authBusy: false,
+
+    // ── App state ────────────────────────────────────────────────
     messages:  [],
-    status:    { state: 'connecting', trust: 0, project: '', plan: 'none' },
+    status:    { state: 'new', trust: 0, project: '', plan: 'none' },
     askActive: false,
     replyText: '',
-    connected: false,
-    dragging:  false,
+    showMenu:  false,
     uploading: false,
+    connected: false,
+    _es:       null,          // EventSource reference
 
-    init() {
-      this.connectSSE();
+    // ── Lifecycle ────────────────────────────────────────────────
+    async init() {
+      try {
+        const r  = await fetch('/api/auth/status');
+        const d  = await r.json();
+        if (d.loggedIn) {
+          this.screen = 'app';
+          this.$nextTick(() => this.connectSSE());
+        } else {
+          this.screen = d.hasUser ? 'login' : 'setup';
+        }
+      } catch {
+        this.screen = 'login';
+      }
     },
 
-    connectSSE() {
-      const es = new EventSource('/events');
-
-      es.addEventListener('msg', (e) => {
-        const d = JSON.parse(e.data);
-        this.messages.push(d);
-        if (d.type === 'ask') this.askActive = true;
-        this.$nextTick(() => {
-          document.getElementById('feed-end')?.scrollIntoView({ behavior: 'smooth' });
+    // ── Auth ─────────────────────────────────────────────────────
+    async submitAuth() {
+      this.authErr  = '';
+      this.authBusy = true;
+      const url = this.screen === 'setup' ? '/api/auth/setup' : '/api/auth/login';
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: this.authUser, password: this.authPass }),
         });
-      });
-
-      es.addEventListener('status', (e) => {
-        this.status = JSON.parse(e.data);
-      });
-
-      es.addEventListener('history_end', () => {
-        if (this.messages.length > 0) {
-          this.messages.push({ type: 'separator', text: '— earlier —', ts: '' });
-          this.$nextTick(() => {
-            document.getElementById('feed-end')?.scrollIntoView({ behavior: 'instant' });
-          });
+        const d = await r.json();
+        if (!r.ok) {
+          this.authErr = d.error || 'Something went wrong';
+        } else {
+          this.authPass = '';
+          this.screen   = 'app';
+          this.$nextTick(() => this.connectSSE());
         }
+      } catch {
+        this.authErr = 'Network error — please try again';
+      } finally {
+        this.authBusy = false;
+      }
+    },
+
+    async logout() {
+      this.showMenu = false;
+      await fetch('/api/auth/logout', { method: 'POST' });
+      if (this._es) { this._es.close(); this._es = null; }
+      this.messages   = [];
+      this.connected  = false;
+      this.askActive  = false;
+      this.replyText  = '';
+      this.authUser   = '';
+      this.authPass   = '';
+      this.screen     = 'login';
+    },
+
+    // ── SSE ──────────────────────────────────────────────────────
+    connectSSE() {
+      if (this._es) this._es.close();
+      const es = new EventSource('/events');
+      this._es = es;
+
+      es.addEventListener('status', e => {
+        try { this.status = JSON.parse(e.data); } catch {}
       });
 
       es.addEventListener('ask_active', () => { this.askActive = true; });
       es.addEventListener('ask_done',   () => { this.askActive = false; });
 
-      es.onopen  = () => { this.connected = true; };
-      es.onerror = () => { this.connected = false; };
-    },
-
-    msgClass(type) {
-      if (type === 'ask')   return 'msg-ask';
-      if (type === 'reply') return 'msg-reply';
-      return 'msg-agent';
-    },
-
-    renderMd(text) {
-      if (!text) return '';
-      try {
-        const raw = marked.parse(String(text), { breaks: true, gfm: true });
-        return DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } });
-      } catch (_) { return DOMPurify.sanitize(String(text)); }
-    },
-
-    push(text, type) {
-      this.messages.push({ type: type || 'message', text, ts: new Date().toLocaleTimeString() });
-      this.$nextTick(() => {
-        document.getElementById('feed-end')?.scrollIntoView({ behavior: 'smooth' });
+      es.addEventListener('msg', e => {
+        try {
+          const m = JSON.parse(e.data);
+          this.push(m);
+          if (m.type === 'ask') this.askActive = true;
+        } catch {}
       });
-    },
 
-    async cmd(name) {
-      try {
-        const r = await fetch('/api/' + name);
-        const d = await r.json();
-        let text = '';
-
-        if (name === 'status') {
-          this.status = d;
-          text = '**📊 Status**\n\n' +
-            'Project: ' + d.project + '\n' +
-            'State:   ' + d.state   + '\n' +
-            'Trust:   ' + (d.trust||0).toFixed(1) + '%\n' +
-            'Plan:    ' + (d.plan || 'none');
-
-        } else if (name === 'score') {
-          const bar = (v) => {
-            const f = Math.round((v / 100) * 10);
-            return '█'.repeat(Math.max(0, f)) + '░'.repeat(Math.max(0, 10 - f));
-          };
-          text = '**🎯 Trust Score: ' + (d.total||0).toFixed(1) + '%**\n\n' +
-            'Doc Coverage   [' + bar(d.doc_coverage)   + '] ' + (d.doc_coverage||0).toFixed(0)   + '%\n' +
-            'Clarifications [' + bar(d.clarifications) + '] ' + (d.clarifications||0).toFixed(0) + '%\n' +
-            'Repo Scan      [' + bar(d.repo_scan)      + '] ' + (d.repo_scan||0).toFixed(0)      + '%\n' +
-            'Low Ambiguity  [' + bar(d.ambiguity)      + '] ' + (d.ambiguity||0).toFixed(0)      + '%\n' +
-            'Chunks indexed: ' + (d.chunks||0);
-
-        } else if (name === 'tasks') {
-          if (!d.tasks || d.tasks.length === 0) {
-            text = '📋 No active plan yet. Upload your docs to get started.';
-          } else {
-            const icon = { done:'✅', in_progress:'🔄', failed:'❌', skipped:'⏭', approved:'👍' };
-            const rows = d.tasks.map(t =>
-              (icon[t.status] || '⏳') + ' Phase ' + t.phase + ' — **' + t.title + '** [' + t.status + ']'
-            ).join('\n');
-            text = '**📋 Plan v' + d.version + '**\n\n' + rows;
-          }
-
-        } else if (name === 'log') {
-          if (!d.logs || d.logs.length === 0) {
-            text = '📜 No log entries yet.';
-          } else {
-            const rows = d.logs.map(l => l.time + ' **' + l.event + '**: ' + l.text).join('\n');
-            text = '**📜 Last events**\n\n' + rows;
-          }
-
-        } else if (name === 'usage') {
-          if (!d.all || d.all.length === 0) {
-            text = '📈 No usage recorded yet.';
-          } else {
-            const rows = d.all.map(u =>
-              '**' + (u.Provider||u.provider) + '/' + (u.Model||u.model) + '** — ' +
-              (u.TotalTokens || u.total_tokens || 0) + ' tokens'
-            ).join('\n');
-            text = '**📈 LLM Usage (all time)**\n\n' + rows;
-          }
+      es.addEventListener('history_end', () => {
+        if (this.messages.length > 0) {
+          this.messages.push({ type: 'separator', text: '— earlier —' });
         }
+        this.scrollBottom();
+      });
 
-        if (text) this.push(text, 'message');
-      } catch (err) {
-        this.push('❌ Request failed: ' + err.message, 'message');
-      }
+      es.onopen = () => { this.connected = true; };
+
+      es.onerror = () => {
+        this.connected = false;
+        // If the server returns 401 the EventSource will error out.
+        // Check auth and redirect to login if the session is gone.
+        fetch('/api/auth/status').then(r => r.json()).then(d => {
+          if (!d.loggedIn) {
+            es.close();
+            this.screen = 'login';
+          }
+        }).catch(() => {});
+      };
     },
 
-    async post(name) {
-      try { await fetch('/api/' + name, { method: 'POST' }); }
-      catch (err) { this.push('❌ ' + name + ' failed: ' + err.message, 'message'); }
+    // ── Message helpers ──────────────────────────────────────────
+    push(m) {
+      this.messages.push(m);
+      this.$nextTick(() => this.scrollBottom());
     },
 
+    scrollBottom() {
+      const el = document.getElementById('feed-end');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    },
+
+    renderMsg(text) {
+      if (!text) return '';
+      return DOMPurify.sanitize(marked.parse(text));
+    },
+
+    // ── Reply ────────────────────────────────────────────────────
     async sendReply() {
       const text = this.replyText.trim();
       if (!text || !this.askActive) return;
       this.replyText = '';
-      this.askActive = false;
-      try {
-        await fetch('/api/reply', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
-        });
-      } catch (err) {
-        this.push('❌ Send failed: ' + err.message, 'message');
+      this.$nextTick(() => this.autoResize(this.$refs.replyInput));
+      const r = await fetch('/api/reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (r.status === 401) { this.screen = 'login'; }
+    },
+
+    // ── Commands ─────────────────────────────────────────────────
+    async cmd(url, label) {
+      this.showMenu = false;
+      const r = await fetch(url);
+      if (r.status === 401) { this.screen = 'login'; return; }
+      const d = await r.json();
+      const keys = Object.keys(d);
+      let text;
+      if (keys.length === 1 && typeof d[keys[0]] === 'string') {
+        text = '**' + label.toUpperCase() + '**\n' + d[keys[0]];
+      } else {
+        text = '**' + label.toUpperCase() + '**\nBTICKBTICKBTICKjson\n' + JSON.stringify(d, null, 2) + '\nBTICKBTICKBTICK';
       }
+      this.push({ type: 'message', text: text, ts: new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) });
     },
 
-    async handleDrop(e) {
-      this.dragging = false;
-      const f = e.dataTransfer.files[0];
-      if (f) await this.uploadFile(f);
-    },
-
-    async handleFile(e) {
-      const f = e.target.files[0];
-      if (f) await this.uploadFile(f);
-      e.target.value = '';
-    },
-
-    async uploadFile(file) {
-      if (!file.name.toLowerCase().endsWith('.md')) {
-        alert('Only .md (Markdown) files are accepted.');
-        return;
-      }
+    // ── Upload ───────────────────────────────────────────────────
+    async uploadDoc(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      event.target.value = '';
       this.uploading = true;
       const fd = new FormData();
       fd.append('file', file);
       try {
         const r = await fetch('/api/upload', { method: 'POST', body: fd });
-        if (!r.ok) {
-          const e = await r.json().catch(() => ({}));
-          this.push('❌ Upload failed: ' + (e.error || r.statusText), 'message');
-        }
-      } catch (err) {
-        this.push('❌ Upload error: ' + err.message, 'message');
+        if (r.status === 401) { this.screen = 'login'; return; }
       } finally {
         this.uploading = false;
       }
+    },
+
+    // ── Auto-resize textarea ─────────────────────────────────────
+    autoResize(el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 120) + 'px';
     },
   };
 }

@@ -612,3 +612,51 @@ func scanTasks(rows interface {
         }
         return tasks, rows.Err()
 }
+
+// ─── Auth ──────────────────────────────────────────────────────────────────
+
+// HasUser returns true when at least one user account exists.
+func (d *DB) HasUser(ctx context.Context) bool {
+        var n int
+        _ = d.pool.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&n)
+        return n > 0
+}
+
+// CreateUser inserts the single user record. Fails if a user already exists.
+func (d *DB) CreateUser(ctx context.Context, username, passwordHash string) error {
+        _, err := d.pool.Exec(ctx,
+                `INSERT INTO users(username, password_hash) VALUES($1,$2)`,
+                username, passwordHash)
+        return err
+}
+
+// GetUserPasswordHash returns the bcrypt hash for the given username.
+func (d *DB) GetUserPasswordHash(ctx context.Context, username string) (string, error) {
+        var hash string
+        err := d.pool.QueryRow(ctx,
+                `SELECT password_hash FROM users WHERE username=$1`, username).Scan(&hash)
+        return hash, err
+}
+
+// CreateSession persists a new session token.
+func (d *DB) CreateSession(ctx context.Context, token, username string, expiresAt time.Time) error {
+        _, err := d.pool.Exec(ctx,
+                `INSERT INTO sessions(token, username, expires_at) VALUES($1,$2,$3)`,
+                token, username, expiresAt)
+        return err
+}
+
+// GetSession returns the username and expiry for a token.
+func (d *DB) GetSession(ctx context.Context, token string) (string, time.Time, error) {
+        var username string
+        var exp time.Time
+        err := d.pool.QueryRow(ctx,
+                `SELECT username, expires_at FROM sessions WHERE token=$1`, token).Scan(&username, &exp)
+        return username, exp, err
+}
+
+// DeleteSession removes a session by token.
+func (d *DB) DeleteSession(ctx context.Context, token string) error {
+        _, err := d.pool.Exec(ctx, `DELETE FROM sessions WHERE token=$1`, token)
+        return err
+}
