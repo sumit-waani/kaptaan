@@ -213,6 +213,21 @@ func (d *DB) migrate(ctx context.Context) error {
                 }
                 _, _ = d.pool.Exec(ctx,
                         `CREATE INDEX IF NOT EXISTS `+t+`_project_id_idx ON `+t+`(project_id)`)
+
+                // Add ON DELETE CASCADE FK so deleting a project automatically
+                // wipes all its rows. Idempotent: skipped if FK already exists.
+                fkName := t + "_project_id_fkey"
+                _, _ = d.pool.Exec(ctx, `
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = '`+fkName+`'
+                    ) THEN
+                        ALTER TABLE `+t+`
+                            ADD CONSTRAINT `+fkName+`
+                            FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE;
+                    END IF;
+                END $$;`)
         }
         // New project columns on the project table itself (older deployments).
         _, _ = d.pool.Exec(ctx, `ALTER TABLE project ADD COLUMN IF NOT EXISTS repo_url     TEXT NOT NULL DEFAULT ''`)

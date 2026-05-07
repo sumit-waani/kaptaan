@@ -227,14 +227,19 @@ func (b *Builder) spawnJobExecutor(ctx context.Context, task *db.Task) (*tools.E
                 return nil, func() {}, fmt.Errorf("E2B_API_KEY not configured")
         }
 
-        // Resolve per-project repo+token, with env vars as fallback.
+        // Resolve repo+token from THIS task's project (not whichever happens
+        // to be active right now). The job is hard-bound at enqueue time so a
+        // mid-flight active-project switch can't redirect the build to the
+        // wrong repo. Env vars are the final fallback.
         repo, token := b.cfg.GithubRepo, b.cfg.GithubToken
-        if proj, err := b.db.GetActiveProject(ctx); err == nil && proj != nil {
-                if strings.TrimSpace(proj.RepoURL) != "" {
-                        repo = proj.RepoURL
-                }
-                if strings.TrimSpace(proj.GithubToken) != "" {
-                        token = proj.GithubToken
+        if pid, err := b.db.GetTaskProjectID(ctx, task.ID); err == nil && pid > 0 {
+                if proj, err := b.db.GetProjectByID(ctx, pid); err == nil && proj != nil {
+                        if strings.TrimSpace(proj.RepoURL) != "" {
+                                repo = proj.RepoURL
+                        }
+                        if strings.TrimSpace(proj.GithubToken) != "" {
+                                token = proj.GithubToken
+                        }
                 }
         }
         if token == "" {
@@ -270,8 +275,12 @@ func (b *Builder) spawnJobExecutor(ctx context.Context, task *db.Task) (*tools.E
         }
 
         b.statusForTask(ctx, task.ID, task.Title, "sandbox", "Installing Go toolchain")
+        // NOTE: we pre-create the repo dir here so SandboxRuntime.Cwd
+        // (= sandboxRepoDir) is a valid path on the very first Shell call.
+        // E2B's envd rejects Run() requests when cwd does not exist, which
+        // would otherwise blow up the clone step before it even runs.
         bootstrap := `set -e
-mkdir -p $HOME/.local $HOME/go $HOME/.cache/go-build
+mkdir -p $HOME/.local $HOME/go $HOME/.cache/go-build $HOME/repo
 if [ ! -x $HOME/.local/go/bin/go ]; then
   cd $HOME/.local
   curl -sSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz -o go.tar.gz
@@ -387,6 +396,14 @@ Relevant docs:
         }
         toolDefs := tools.Definitions()
         runtime := &buildRuntime{}
+        // Hydrate PR state from a previous attempt — when a job is requeued after
+        // successfully opening a PR (e.g. a downstream test step failed), we must
+        // NOT try to create the PR again. The agent loop also checks runtime.prURL
+        // so it won't churn on `gh pr create` "already exists" errors.
+        if strings.TrimSpace(job.PRURL) != "" {
+                runtime.prURL = job.PRURL
+                runtime.prNumber = job.PRNumber
+        }
 
         for i := 0; i < maxBuilderIterations; i++ {
                 resp, err := b.llm.Chat(ctx, messages, toolDefs)
@@ -436,9 +453,18 @@ Relevant docs:
                 result := exec.Shell(ctx, "go test ./... -cover 2>&1", 240)
                 runtime.testOutput = result.Output
                 if result.IsErr {
-                        return fmt.Errorf("final tests failed: %s", truncateStr(result.Output, 1000))
+                        // Scaffolding tasks legitimately have zero .go files yet — `go test`
+                        // returns exit 1 with this message, which is not a real failure.
+                        if strings.Contains(result.Output, "matched no packages") ||
+                                strings.Contains(result.Output, "no packages to test") {
+                                b.statusForTask(ctx, task.ID, task.Title, "testing", "no packages to test (scaffolding only) — skipping")
+                                runtime.testPassed = true
+                        } else {
+                                return fmt.Errorf("final tests failed: %s", truncateStr(result.Output, 1000))
+                        }
+                } else {
+                        runtime.testPassed = true
                 }
-                runtime.testPassed = true
         }
         b.statusForTask(ctx, task.ID, task.Title, "testing", "go test ./... -cover — pass")
 
@@ -447,9 +473,21 @@ Relevant docs:
                 body := fmt.Sprintf("Implements task #%d\n\n%s", task.ID, task.Description)
                 prCreate := exec.GithubOp(ctx, "pr_create", fmt.Sprintf("%s|%s|%s", title, body, branch))
                 if prCreate.IsErr {
-                        return fmt.Errorf("create pr: %s", truncateStr(prCreate.Output, 1000))
+                        // Idempotent fallback: if a PR already exists for this branch
+                        // (typically because a previous attempt opened one before being
+                        // requeued), reuse it instead of failing the job.
+                        if strings.Contains(strings.ToLower(prCreate.Output), "already exists") {
+                                existing := exec.Shell(ctx, fmt.Sprintf("gh pr list --head %q --json url --jq '.[0].url' 2>&1", branch), 60)
+                                if !existing.IsErr {
+                                        runtime.prURL = strings.TrimSpace(existing.Output)
+                                }
+                        }
+                        if runtime.prURL == "" {
+                                return fmt.Errorf("create pr: %s", truncateStr(prCreate.Output, 1000))
+                        }
+                } else {
+                        runtime.prURL = extractPRURL(prCreate.Output)
                 }
-                runtime.prURL = extractPRURL(prCreate.Output)
         }
 
         if runtime.prURL == "" {

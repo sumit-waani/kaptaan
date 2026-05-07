@@ -7,6 +7,7 @@ import (
 
 type BuilderJob struct {
         ID          int
+        ProjectID   int
         TaskID      int
         Status      string
         Branch      string
@@ -36,7 +37,7 @@ func (d *DB) CreateBuilderJob(ctx context.Context, taskID int, branch string) (*
         row := d.pool.QueryRow(ctx, `
         INSERT INTO builder_jobs(project_id, task_id, status, branch)
         VALUES($1, $2, 'queued', $3)
-        RETURNING id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+        RETURNING id, project_id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
             started_at, finished_at, created_at, updated_at`,
                 pid, taskID, branch)
         return scanBuilderJob(row)
@@ -45,7 +46,7 @@ func (d *DB) CreateBuilderJob(ctx context.Context, taskID int, branch string) (*
 // GetNextQueuedJob returns the oldest queued job for the active project.
 func (d *DB) GetNextQueuedJob(ctx context.Context) (*BuilderJob, error) {
         row := d.pool.QueryRow(ctx, `
-        SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+        SELECT id, project_id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
             started_at, finished_at, created_at, updated_at
         FROM builder_jobs
         WHERE status='queued' AND project_id=$1
@@ -83,7 +84,7 @@ func (d *DB) ListQueuedJobs(ctx context.Context) ([]BuilderJobSummary, error) {
 // project, if any. Returns pgx.ErrNoRows when nothing is running.
 func (d *DB) GetRunningJob(ctx context.Context) (*BuilderJob, error) {
         row := d.pool.QueryRow(ctx, `
-        SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+        SELECT id, project_id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
             started_at, finished_at, created_at, updated_at
         FROM builder_jobs
         WHERE status='running' AND project_id=$1
@@ -113,7 +114,7 @@ func (d *DB) UpdateBuilderJob(ctx context.Context, id int, status, prURL string,
 // GetBuilderJob returns a job by ID.
 func (d *DB) GetBuilderJob(ctx context.Context, id int) (*BuilderJob, error) {
         row := d.pool.QueryRow(ctx, `
-        SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+        SELECT id, project_id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
             started_at, finished_at, created_at, updated_at
         FROM builder_jobs
         WHERE id=$1`, id)
@@ -123,7 +124,7 @@ func (d *DB) GetBuilderJob(ctx context.Context, id int) (*BuilderJob, error) {
 // GetJobForTask returns the most recent job for a task.
 func (d *DB) GetJobForTask(ctx context.Context, taskID int) (*BuilderJob, error) {
         row := d.pool.QueryRow(ctx, `
-        SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+        SELECT id, project_id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
             started_at, finished_at, created_at, updated_at
         FROM builder_jobs
         WHERE task_id=$1
@@ -174,7 +175,7 @@ func (d *DB) UpdateBuilderJobStatus(ctx context.Context, id int, status string) 
 // GetStaleBuilderJobs returns jobs stuck in running state for over 10 minutes.
 func (d *DB) GetStaleBuilderJobs(ctx context.Context) ([]BuilderJob, error) {
         rows, err := d.pool.Query(ctx, `
-        SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+        SELECT id, project_id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
             started_at, finished_at, created_at, updated_at
         FROM builder_jobs
         WHERE status='running' AND updated_at < NOW() - INTERVAL '10 minutes'
@@ -199,7 +200,7 @@ func (d *DB) GetStaleBuilderJobs(ctx context.Context) ([]BuilderJob, error) {
 // waiting for the user's merge/reject decision.
 func (d *DB) ListJobsAwaitingReview(ctx context.Context) ([]BuilderJob, error) {
         rows, err := d.pool.Query(ctx, `
-        SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+        SELECT id, project_id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
             started_at, finished_at, created_at, updated_at
         FROM builder_jobs
         WHERE status='awaiting_review' AND project_id=$1
@@ -274,6 +275,7 @@ func scanBuilderJob(row scannable) (*BuilderJob, error) {
         j := &BuilderJob{}
         err := row.Scan(
                 &j.ID,
+                &j.ProjectID,
                 &j.TaskID,
                 &j.Status,
                 &j.Branch,

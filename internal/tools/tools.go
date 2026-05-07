@@ -11,6 +11,7 @@ import (
         "fmt"
         "io"
         "net/http"
+        "path/filepath"
         "strings"
         "time"
 
@@ -232,7 +233,13 @@ func (e *Executor) GithubOp(ctx context.Context, op, args string) Result {
                         return Result{Output: "GITHUB_REPO not configured", IsErr: true}
                 }
                 // Always clone fresh — the sandbox is ephemeral so there is nothing to pull.
-                cmd = fmt.Sprintf("rm -rf %q && gh repo clone %s %q", wd, repo, wd)
+                // Run from the parent dir: we're about to `rm -rf` wd; sitting inside it
+                // would leave git unable to read its own cwd after the delete.
+                parent := filepath.Dir(wd)
+                if parent == "" || parent == "." {
+                        parent = "/"
+                }
+                cmd = fmt.Sprintf("cd %q && rm -rf %q && gh repo clone %s %q", parent, wd, repo, wd)
         case "status":
                 cmd = cdPrefix + "git status && git log --oneline -5"
         case "push":
