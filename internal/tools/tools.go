@@ -56,10 +56,10 @@ func Definitions() []llm.Tool {
 			}, []string{"path"}),
 
 		def("github_op",
-			"GitHub operations. op: clone, push, pr_create, pr_list, status, checkout_branch, create_branch.",
+			"GitHub operations. op: clone, push, pr_create, pr_list, status, checkout_branch, create_branch, merge_pr.",
 			map[string]interface{}{
-				"op":   str("one of: clone, push, pr_create, pr_list, status, checkout_branch, create_branch"),
-				"args": str("for pr_create: 'title|body|branch'. for push/checkout/create_branch: branch name"),
+				"op":   str("one of: clone, push, pr_create, pr_list, status, checkout_branch, create_branch, merge_pr"),
+				"args": str("for pr_create: 'title|body|branch'. for push/checkout/create_branch: branch name. for merge_pr: PR number"),
 			}, []string{"op"}),
 
 		def("search_docs",
@@ -260,10 +260,23 @@ func (e *Executor) GithubOp(ctx context.Context, op, args string) Result {
 			e.WorkspaceDir, title, body, branchFlag)
 	case "pr_list":
 		cmd = fmt.Sprintf("cd %q && gh pr list --limit 10", e.WorkspaceDir)
+	case "merge_pr":
+		if args == "" {
+			return Result{Output: "pr number required", IsErr: true}
+		}
+		cmd = fmt.Sprintf("cd %q && gh pr merge %s --merge --delete-branch", e.WorkspaceDir, args)
 	default:
 		return Result{Output: "unknown github_op: " + op, IsErr: true}
 	}
 	return e.Shell(ctx, cmd, 120)
+}
+
+// ScanRepo runs a file tree scan and returns output.
+func (e *Executor) ScanRepo(ctx context.Context) (string, error) {
+	result := e.Shell(ctx,
+		`find . -type f -name "*.go" | head -100 && echo "---" && cat go.mod 2>/dev/null || echo "no go.mod"`,
+		30)
+	return result.Output, nil
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
