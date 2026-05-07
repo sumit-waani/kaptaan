@@ -111,7 +111,7 @@ func New(cfg Config, onUsage func(UsageRecord)) *Pool {
         }
 
         if len(providers) == 0 {
-                log.Println("⚠️  llm: no providers configured — set DEEPSEEK_API_KEY or NIM_API_KEY_*. Agent will not be able to generate responses.")
+                panic("llm: no providers configured — set DEEPSEEK_API_KEY or NIM_API_KEY_*")
         }
 
         if onUsage == nil {

@@ -7,7 +7,7 @@ import "strings"
 var indexHTML string
 
 func init() {
-	indexHTML = strings.ReplaceAll(rawHTML, "BTICK", "`")
+        indexHTML = strings.ReplaceAll(rawHTML, "BTICK", "`")
 }
 
 // rawHTML uses the placeholder BTICK wherever a literal backtick is needed.
@@ -18,6 +18,7 @@ const rawHTML = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Kaptaan — CTO Agent</title>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12/dist/htmx.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
   <style>
     :root {
