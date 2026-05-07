@@ -96,8 +96,9 @@ func (s *Server) SetMOTD(msg string) {
         s.mu.Unlock()
 }
 
-// Send broadcasts a text message to all connected browsers via SSE.
+// Send broadcasts a text message to all connected browsers via SSE and persists it.
 func (s *Server) Send(text string) {
+        _ = s.db.AddMessage(context.Background(), "message", text)
         s.hub.broadcast(s.sseMsg("message", text))
         log.Printf("[web] send: %s", trunc(text, 80))
 }
@@ -121,6 +122,7 @@ func (s *Server) Ask(question string) string {
                 s.hub.broadcast("event: ask_done\ndata: {}\n\n")
         }()
 
+        _ = s.db.AddMessage(context.Background(), "ask", question)
         s.hub.broadcast(s.sseMsg("ask", question))
         log.Printf("[web] ask: %s", trunc(question, 80))
 
@@ -221,6 +223,23 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
                 flusher.Flush()
         }
 
+        // Replay recent message history so the browser feed is populated on connect.
+        // Track the role of the last replayed message to avoid duplicate ask bubbles.
+        lastHistoryRole := ""
+        if history, err := s.db.GetRecentMessages(r.Context(), 200); err == nil && len(history) > 0 {
+                for _, m := range history {
+                        data, _ := json.Marshal(map[string]string{
+                                "type": m.Role,
+                                "text": m.Content,
+                                "ts":   m.Timestamp,
+                        })
+                        fmt.Fprintf(w, "event: msg\ndata: %s\n\n", data)
+                        lastHistoryRole = m.Role
+                }
+                fmt.Fprint(w, "event: history_end\ndata: {}\n\n")
+                flusher.Flush()
+        }
+
         // Send message-of-the-day if set (e.g. "no LLM keys configured")
         s.mu.Lock()
         motd := s.motd
@@ -233,6 +252,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
         // Re-broadcast any pending ask to the new client.
         // Check in-memory first (ask is live in this process); fall back to KV
         // which survives server restarts.
+        // Skip resending the question text if history replay already surfaced it
+        // as the last message (prevents a duplicate bubble in the feed).
         persistedAsk := s.db.KVGetDefault(r.Context(), "pending_ask", "")
         s.mu.Lock()
         active := s.askActive
@@ -240,9 +261,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
         s.mu.Unlock()
 
         if active {
-                // Ask is live right now — resend the actual question text.
-                fmt.Fprint(w, s.sseMsg("ask", question))
-                flusher.Flush()
+                if lastHistoryRole != "ask" {
+                        // Ask is live but history didn't end on an ask — show the question.
+                        fmt.Fprint(w, s.sseMsg("ask", question))
+                        flusher.Flush()
+                }
+                // If history already ended with the ask bubble the JS already set
+                // askActive = true via the replayed msg event — nothing more to send.
         } else if persistedAsk != "" {
                 // Server restarted while agent was mid-ask — let the user know and
                 // surface the question so they can still reply once the agent loop
@@ -509,6 +534,7 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 
         select {
         case s.pending <- payload.Text:
+                _ = s.db.AddMessage(r.Context(), "reply", "You: "+payload.Text)
                 s.hub.broadcast(s.sseMsg("reply", "You: "+payload.Text))
                 jsonOK(w, map[string]string{"ok": "sent"})
         default:

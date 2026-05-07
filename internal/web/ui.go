@@ -78,6 +78,13 @@ const rawHTML = `<!DOCTYPE html>
     .msg-ask   { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--purple); }
     .msg-reply { background: #1a2a1a; border: 1px solid #2a3f2a; border-left: 3px solid var(--green); }
     .msg-ts { font-size: .68rem; color: var(--muted); margin-bottom: 4px; }
+    .history-sep {
+      display: flex; align-items: center; gap: 10px;
+      font-size: .7rem; color: var(--muted); padding: 4px 0;
+    }
+    .history-sep::before, .history-sep::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
 
     /* Markdown inside messages */
     .msg code { background: #1c2128; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: .82em; }
@@ -161,10 +168,15 @@ const rawHTML = `<!DOCTYPE html>
     <!-- Message Feed -->
     <div class="feed" id="feed">
       <template x-for="(m, i) in messages" :key="i">
-        <div class="msg" :class="msgClass(m.type)">
-          <div class="msg-ts" x-text="m.ts"></div>
-          <div x-html="renderMd(m.text)"></div>
-        </div>
+        <template x-if="m.type === 'separator'">
+          <div class="history-sep" x-text="m.text"></div>
+        </template>
+        <template x-if="m.type !== 'separator'">
+          <div class="msg" :class="msgClass(m.type)">
+            <div class="msg-ts" x-text="m.ts"></div>
+            <div x-html="renderMd(m.text)"></div>
+          </div>
+        </template>
       </template>
       <div id="feed-end" style="height:1px"></div>
     </div>
@@ -266,6 +278,15 @@ function app() {
 
       es.addEventListener('status', (e) => {
         this.status = JSON.parse(e.data);
+      });
+
+      es.addEventListener('history_end', () => {
+        if (this.messages.length > 0) {
+          this.messages.push({ type: 'separator', text: '— earlier —', ts: '' });
+          this.$nextTick(() => {
+            document.getElementById('feed-end')?.scrollIntoView({ behavior: 'instant' });
+          });
+        }
       });
 
       es.addEventListener('ask_active', () => { this.askActive = true; });
