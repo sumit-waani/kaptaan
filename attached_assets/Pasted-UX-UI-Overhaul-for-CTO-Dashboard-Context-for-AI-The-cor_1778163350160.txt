@@ -1,0 +1,62 @@
+UX/UI Overhaul for CTO Dashboard
+**Context for AI:** The core Manager + Builder agent logic is battle-tested and working. However, the current UX is acting like a generic chatbot rather than a structured CTO dashboard. We need to fix the UI constraints, separate chat from actions, and build a clear visual hierarchy for task execution.
+Please implement the following architectural UX upgrades:
+**Priority 1: Plan → Phase → Task → Job Hierarchy View**
+ * **Issue:** The Builder tab currently shows a flat, context-less list of jobs.
+ * **Fix:** Build a structured tree/hierarchy view. The UI must clearly display the execution flow: Phase 1 (Infra) -> Task (Setup DB) -> Job (Building.../Merged). The user needs to see the holistic plan and what is currently queued vs. running.
+**Priority 2: Dedicated PR Approval & Action UI**
+ * **Issue:** Approving plans or PRs relies on the user typing "go" or "yes" into the same single chat box. PR diffs are just raw markdown bubbles.
+ * **Fix:** Detach approvals from the chat input. Create a structured **PR Approval Card** (preferably in the Builder/Task tab or as an interactive modal) that includes a proper Diff Viewer and explicit **[Approve]** and **[Reject]** buttons.
+**Priority 3: Actionable Builder Logs & Failure States**
+ * **Issue:** Running milestone logs are unreadable <pre> dumps. Failed jobs just say "failed" with zero context. Retry attempts are invisible.
+ * **Fix:** * Replace raw logs with a clean, step-by-step milestone timeline.
+   * When a job fails, add an expandable section showing the exact build/test error output.
+   * Explicitly show the retry state in the UI (e.g., Attempt 2/3 - Retrying in 60s).
+**Priority 4: Input & State Safety (Quality of Life)**
+ * **Context Overload:** Disable the main text input box when the agent is paused, or when waiting for a specific button-click approval.
+ * **Global Stop:** Ensure the "Stop" action cancels *both* the Manager's thinking process AND forcefully kills the running Builder job/sandbox.
+ * **Agent Identity:** Add visual status indicators (e.g., "Manager is thinking...", "Builder is provisioning sandbox...") so the user knows exactly which agent is holding the baton.
+
+Kuch aur issues bhi h 
+Currently manager agent plan banata h for builder and builder agent ko pass karta h 
+Right ?
+But wo kitna detailed plan de rha h 
+Kya content de rha h 
+Ko bhi running task ke saath dikhao 
+To visibility rahe ho planner agent is performing 
+
+Next ideal flow should be 
+Planner agent ko just 1 bare me sare phase plan laga kar queue nhi karna chahiye 
+Git merge and race condition issues aayenge 
+As builder just task 1 karte hi task 2 utha lega 
+Jabki task 1 pr merge bhi nhi huyi hogi 
+
+Instead planner/manager ne plan banaya 
+Phase 1 ka 
+Builder ko diya 
+Builder submitted 
+Manager checked pr and task status 
+Submitted in ui 
+Waited for user approval 
+And merged it 
+Only task GitHub level par merge hone par hi use builder agent ko next task dena chahiye 🤔
+Also currently 
+Agar repo connected nhi h 
+Missing h 
+To bhi manager plan karna shuru kar deta h 
+Repo connect hona must h 
+And manager should be aware about this 
+Blocking planning or any execution until repo is connected 
+Also tu projects ko delete karne ja 
+Suddenly the default project firse popup hoga 
+Jaise delete hua hi nhi tha 
+Idempotency recovery crashing ke aur kuch issues h 
+Unhe bhi dekh 
+Fix kar 
+Test kar 
+Then submit 
+
+Settings page par jo logs dikh rhe h 
+Wo temporary h wo ham last me hata denge jab project complete ho jayega abhi nhi 
+To visibility jyada honi chahiye chat window and builder section me 
+Logs par itna focus mat kar settings page wale logs par 
