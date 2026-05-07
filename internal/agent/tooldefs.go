@@ -104,4 +104,7 @@ var allTools = []llm.Tool{
                 }, "title", "branch")),
         mkTool("merge_pr", "Merge a pull request by number.",
                 obj(map[string]interface{}{"number": iprop("pull request number")}, "number")),
+
+        mkTool("reset_sandbox", "Close the current sandbox and wipe its state. Call this ONLY when starting a completely new, unrelated task — NOT between phases of the same task.",
+                obj(map[string]interface{}{})),
 }

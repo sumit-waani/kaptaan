@@ -31,27 +31,40 @@ type Hooks struct {
         NotifyState func(projectID int)
 }
 
+// projectSandbox is the live E2B sandbox for one project, shared across all
+// turns until the agent explicitly calls reset_sandbox.
+type projectSandbox struct {
+        runtime tools.Runtime
+        branch  string // working branch auto-created on first use
+}
+
 // Agent owns per-project conversation state and serialises calls per project.
 type Agent struct {
-        db    *db.DB
-        pool  *llm.Pool
-        hooks Hooks
+        db     *db.DB
+        pool   *llm.Pool
+        hooks  Hooks
         e2bKey string
 
-        mu       sync.Mutex
-        convo    map[int][]llm.Message // in-memory chat per project
-        running  map[int]bool          // serialise per project
+        mu      sync.Mutex
+        convo   map[int][]llm.Message // in-memory chat per project
+        running map[int]bool          // serialise per project
+
+        // Sandbox persists across turns (not per-turn). One sandbox per project,
+        // kept alive until reset_sandbox is called or the server restarts.
+        sbMu      sync.Mutex
+        sandboxes map[int]*projectSandbox
 }
 
 // New wires the agent.
 func New(database *db.DB, pool *llm.Pool, e2bKey string, hooks Hooks) *Agent {
         return &Agent{
-                db:      database,
-                pool:    pool,
-                hooks:   hooks,
-                e2bKey:  e2bKey,
-                convo:   make(map[int][]llm.Message),
-                running: make(map[int]bool),
+                db:        database,
+                pool:      pool,
+                hooks:     hooks,
+                e2bKey:    e2bKey,
+                convo:     make(map[int][]llm.Message),
+                running:   make(map[int]bool),
+                sandboxes: make(map[int]*projectSandbox),
         }
 }
 
@@ -164,14 +177,11 @@ func (a *Agent) loadConvo(projectID int) []llm.Message {
 // ─── Per-turn state ────────────────────────────────────────────────────────
 
 type turn struct {
-        a            *Agent
-        proj         *db.Project
-        local        []llm.Message
-        planWritten  bool
-        sandbox      tools.Runtime
-        sandboxOnce  sync.Once
-        sandboxErr   error
-        sandboxMu    sync.Mutex
+        a           *Agent
+        proj        *db.Project
+        local       []llm.Message
+        planWritten bool
+        // sandbox lives on Agent.sandboxes now — not here.
 }
 
 func newTurn(a *Agent, proj *db.Project) *turn {
@@ -188,13 +198,7 @@ func newTurn(a *Agent, proj *db.Project) *turn {
 }
 
 func (t *turn) cleanup() {
-        t.sandboxMu.Lock()
-        sb := t.sandbox
-        t.sandbox = nil
-        t.sandboxMu.Unlock()
-        if sb != nil {
-                _ = sb.Close(context.Background())
-        }
+        // Sandbox is per-project now and lives on Agent.sandboxes — nothing to do here.
 }
 
 func (t *turn) messages() []llm.Message { return t.local }
@@ -230,48 +234,82 @@ func (t *turn) persistUsage(ctx context.Context, projectID, prompt, completion i
         _ = t.a.db.RecordUsage(ctx, projectID, "deepseek", t.a.pool.ActiveModel(), prompt, completion)
 }
 
-// ensureSandbox lazily creates an E2B sandbox for the turn and clones the
-// repo (if a token+url is configured). All Shell/WriteFile/ReadFile callers
-// share the same sandbox for the duration of the turn.
-func (t *turn) ensureSandbox(ctx context.Context) (tools.Runtime, error) {
-        t.sandboxOnce.Do(func() {
-                if t.a.e2bKey == "" {
-                        t.sandboxErr = errors.New("E2B_API_KEY is not configured — sandbox tools are unavailable")
-                        return
-                }
-                t.a.hooks.Send(t.proj.ID, "🛠 spinning up sandbox…")
-                sb, err := sandbox.Create(ctx, t.a.e2bKey, "base", 1800)
-                if err != nil {
-                        t.sandboxErr = fmt.Errorf("sandbox create: %w", err)
-                        return
-                }
-                runtime := &tools.SandboxRuntime{
-                        Sandbox: sb,
-                        Cwd:     "/home/user/workspace",
-                        Env: map[string]string{
-                                "HOME": "/home/user",
-                                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                        },
-                }
-                // Pre-create the workspace dir so cd succeeds even pre-clone.
-                if r := runtime.Shell(ctx, "mkdir -p /home/user/workspace", 30); r.IsErr {
-                        log.Printf("[agent] mkdir workspace: %s", r.Output)
-                }
-                if t.proj.RepoURL != "" && t.proj.GithubToken != "" {
-                        cloneURL := injectToken(t.proj.RepoURL, t.proj.GithubToken)
-                        cmd := fmt.Sprintf("rm -rf /home/user/workspace && git clone %q /home/user/workspace && cd /home/user/workspace && git config user.email kaptaan@local && git config user.name Kaptaan", cloneURL)
-                        if r := runtime.Shell(ctx, cmd, 180); r.IsErr {
-                                t.a.hooks.Send(t.proj.ID, "⚠️ git clone failed:\n```\n"+truncate(r.Output, 800)+"\n```")
+// ensureSandbox returns the project's persistent sandbox, creating it on first
+// call. The sandbox lives until resetSandbox is called — it survives across
+// all turns so file edits and git state are preserved between messages.
+func (a *Agent) ensureSandbox(ctx context.Context, proj *db.Project) (tools.Runtime, error) {
+        a.sbMu.Lock()
+        ps := a.sandboxes[proj.ID]
+        a.sbMu.Unlock()
+        if ps != nil {
+                return ps.runtime, nil
+        }
+
+        if a.e2bKey == "" {
+                return nil, errors.New("E2B_API_KEY is not configured — sandbox tools are unavailable")
+        }
+
+        a.hooks.Send(proj.ID, "🛠 spinning up sandbox…")
+        sb, err := sandbox.Create(ctx, a.e2bKey, "base", 3600) // 1-hour timeout
+        if err != nil {
+                return nil, fmt.Errorf("sandbox create: %w", err)
+        }
+        runtime := &tools.SandboxRuntime{
+                Sandbox: sb,
+                Cwd:     "/home/user/workspace",
+                Env: map[string]string{
+                        "HOME": "/home/user",
+                        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                },
+        }
+
+        // Pre-create the workspace dir so cd succeeds even without a clone.
+        if r := runtime.Shell(ctx, "mkdir -p /home/user/workspace", 30); r.IsErr {
+                log.Printf("[agent] mkdir workspace: %s", r.Output)
+        }
+
+        var branch string
+        repoURL := normalizeRepoURL(proj.RepoURL)
+        if repoURL != "" && proj.GithubToken != "" {
+                cloneURL := injectToken(repoURL, proj.GithubToken)
+                cmd := fmt.Sprintf(
+                        "rm -rf /home/user/workspace && git clone %s /home/user/workspace"+
+                                " && cd /home/user/workspace"+
+                                " && git config user.email kaptaan@local"+
+                                " && git config user.name Kaptaan",
+                        shellQuote(cloneURL),
+                )
+                if r := runtime.Shell(ctx, cmd, 180); r.IsErr {
+                        a.hooks.Send(proj.ID, "⚠️ git clone failed:\n```\n"+truncate(r.Output, 800)+"\n```\nProceeding with empty workspace.")
+                } else {
+                        // Auto-create a working branch so all work in this session is isolated.
+                        branch = "kaptaan/" + time.Now().UTC().Format("20060102-150405")
+                        if r := runtime.Shell(ctx, "cd /home/user/workspace && git checkout -b "+shellQuote(branch), 30); r.IsErr {
+                                log.Printf("[agent] branch create failed: %s", r.Output)
+                                branch = ""
                         } else {
-                                t.a.hooks.Send(t.proj.ID, "✅ repo cloned to `/home/user/workspace`")
+                                a.hooks.Send(proj.ID, "✅ repo cloned, working branch: `"+branch+"`")
                         }
                 }
-                t.sandbox = runtime
-        })
-        if t.sandboxErr != nil {
-                return nil, t.sandboxErr
         }
-        return t.sandbox, nil
+
+        ps = &projectSandbox{runtime: runtime, branch: branch}
+        a.sbMu.Lock()
+        a.sandboxes[proj.ID] = ps
+        a.sbMu.Unlock()
+        return runtime, nil
+}
+
+// resetSandbox closes the current sandbox for a project and removes it so the
+// next tool call that needs a sandbox spins up a fresh one.
+func (a *Agent) resetSandbox(ctx context.Context, projectID int) {
+        a.sbMu.Lock()
+        ps := a.sandboxes[projectID]
+        delete(a.sandboxes, projectID)
+        a.sbMu.Unlock()
+        if ps != nil {
+                _ = ps.runtime.Close(ctx)
+        }
 }
 
 // systemPrompt is rebuilt each turn so project-context changes (repo URL,
@@ -300,10 +338,16 @@ func (t *turn) systemPrompt() string {
         b.WriteString("- Conversation only / questions / explanations do NOT need a plan.\n")
         b.WriteString("- Plans live as files on disk — use `list_plans` and `read_plan` to recall what you decided in earlier turns.\n")
         b.WriteString("- Use `write_memory` to persist long-lived facts about this project (architecture decisions, conventions). Memories survive forever.\n")
-        b.WriteString("- The repo is cloned fresh into the sandbox at the start of each turn that needs it. Don't rely on uncommitted state from a previous turn.\n")
-        b.WriteString("- When you finish a chunk of work, push a branch and open a PR. Merge it with `merge_pr` only after the user agrees (use `ask` for confirmation).\n")
         b.WriteString("- Use `send` to give the user progress updates between tool calls. Markdown is supported.\n")
         b.WriteString("- Use `ask` to get yes/no or short answers from the user when blocked.\n\n")
+
+        b.WriteString("## Sandbox & git workflow\n")
+        b.WriteString("- **The sandbox persists across all turns** until you call `reset_sandbox`. All files, installed packages, and git state are preserved between messages — do NOT re-clone or reinstall between phases.\n")
+        b.WriteString("- When the sandbox first starts, the repo is cloned and a timestamped branch `kaptaan/YYYYMMDD-HHMMss` is created automatically. All your work goes on that branch.\n")
+        b.WriteString("- **Commit frequently** with `git_commit` after each meaningful chunk of work (e.g. after each phase). Never leave a long stretch of work uncommitted.\n")
+        b.WriteString("- When all phases of a task are done, call `open_pr` to push the branch and open a pull request. Then ask the user to review it.\n")
+        b.WriteString("- Only merge with `merge_pr` after the user explicitly approves.\n")
+        b.WriteString("- When starting a **brand new unrelated task**, call `reset_sandbox` first so you get a fresh clone on a new branch. Do NOT call `reset_sandbox` between phases of the same task.\n\n")
 
         if len(plans) > 0 {
                 b.WriteString("## Existing plan files (newest first)\n")
@@ -338,6 +382,30 @@ func truncate(s string, n int) string {
                 return s
         }
         return s[:n] + "…"
+}
+
+// normalizeRepoURL accepts any of these forms and returns a full https URL:
+//   - https://github.com/owner/repo          (already correct)
+//   - github.com/owner/repo                  (missing scheme)
+//   - owner/repo                             (bare slug)
+//   - git@github.com:owner/repo.git          (SSH — returned unchanged)
+func normalizeRepoURL(u string) string {
+        u = strings.TrimSpace(u)
+        if u == "" {
+                return ""
+        }
+        if strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "git@") {
+                return u
+        }
+        // github.com/owner/repo
+        if strings.HasPrefix(u, "github.com/") {
+                return "https://" + u
+        }
+        // bare owner/repo slug
+        if !strings.Contains(u, "://") && strings.Count(u, "/") == 1 {
+                return "https://github.com/" + u
+        }
+        return u
 }
 
 // injectToken rewrites https://github.com/foo/bar into
@@ -505,7 +573,7 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 if path == "" {
                         path = "."
                 }
-                rt, err := t.ensureSandbox(ctx)
+                rt, err := t.a.ensureSandbox(ctx, t.proj)
                 if err != nil {
                         return "ERROR: " + err.Error()
                 }
@@ -517,7 +585,7 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 if path == "" {
                         return "ERROR: read_file requires `path`"
                 }
-                rt, err := t.ensureSandbox(ctx)
+                rt, err := t.a.ensureSandbox(ctx, t.proj)
                 if err != nil {
                         return "ERROR: " + err.Error()
                 }
@@ -533,7 +601,7 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 if path == "" {
                         path = "."
                 }
-                rt, err := t.ensureSandbox(ctx)
+                rt, err := t.a.ensureSandbox(ctx, t.proj)
                 if err != nil {
                         return "ERROR: " + err.Error()
                 }
@@ -546,7 +614,7 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 if path == "" {
                         return "ERROR: write_file requires `path`"
                 }
-                rt, err := t.ensureSandbox(ctx)
+                rt, err := t.a.ensureSandbox(ctx, t.proj)
                 if err != nil {
                         return "ERROR: " + err.Error()
                 }
@@ -559,7 +627,7 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 if cmd == "" {
                         return "ERROR: shell requires `cmd`"
                 }
-                rt, err := t.ensureSandbox(ctx)
+                rt, err := t.a.ensureSandbox(ctx, t.proj)
                 if err != nil {
                         return "ERROR: " + err.Error()
                 }
@@ -568,46 +636,61 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
 
         case "git_commit":
                 msg := getStr(args, "message")
-                branch := getStr(args, "branch")
                 if msg == "" {
                         return "ERROR: git_commit requires `message`"
                 }
-                rt, err := t.ensureSandbox(ctx)
+                rt, err := t.a.ensureSandbox(ctx, t.proj)
                 if err != nil {
                         return "ERROR: " + err.Error()
                 }
-                var script strings.Builder
-                if branch != "" {
-                        fmt.Fprintf(&script, "git checkout -B %s && ", shellQuote(branch))
-                }
-                script.WriteString("git add -A && git commit -m " + shellQuote(msg))
-                r := rt.Shell(ctx, script.String(), 60)
+                // Always commit on the current branch (auto-created at sandbox start).
+                // Do not allow the agent to switch branches mid-session via git_commit.
+                r := rt.Shell(ctx, "cd /home/user/workspace && git add -A && git commit -m "+shellQuote(msg), 60)
                 return r.Output
 
         case "open_pr":
                 title := getStr(args, "title")
                 body := getStr(args, "body")
-                branch := getStr(args, "branch")
                 base := getStr(args, "base")
                 if base == "" {
                         base = "main"
                 }
-                if title == "" || branch == "" {
-                        return "ERROR: open_pr requires `title` and `branch`"
+                if title == "" {
+                        return "ERROR: open_pr requires `title`"
                 }
-                if t.proj.GithubToken == "" || t.proj.RepoURL == "" {
+                repoURL := normalizeRepoURL(t.proj.RepoURL)
+                if t.proj.GithubToken == "" || repoURL == "" {
                         return "ERROR: project has no GitHub repo or token"
                 }
-                rt, err := t.ensureSandbox(ctx)
+                // Determine which branch to push.
+                t.a.sbMu.Lock()
+                ps := t.a.sandboxes[t.proj.ID]
+                t.a.sbMu.Unlock()
+                branch := ""
+                if ps != nil {
+                        branch = ps.branch
+                }
+                if branch == "" {
+                        // Fall back to whatever branch the sandbox is currently on.
+                        rt, err := t.a.ensureSandbox(ctx, t.proj)
+                        if err != nil {
+                                return "ERROR: " + err.Error()
+                        }
+                        r := rt.Shell(ctx, "cd /home/user/workspace && git branch --show-current", 15)
+                        branch = strings.TrimSpace(r.Output)
+                }
+                if branch == "" {
+                        return "ERROR: could not determine current branch"
+                }
+                rt, err := t.a.ensureSandbox(ctx, t.proj)
                 if err != nil {
                         return "ERROR: " + err.Error()
                 }
-                // Push branch first.
-                push := rt.Shell(ctx, fmt.Sprintf("git push -u origin %s", shellQuote(branch)), 120)
+                push := rt.Shell(ctx, "cd /home/user/workspace && git push -u origin "+shellQuote(branch), 120)
                 if push.IsErr {
                         return "push failed:\n" + push.Output
                 }
-                owner, repo, perr := parseOwnerRepo(t.proj.RepoURL)
+                owner, repo, perr := parseOwnerRepo(repoURL)
                 if perr != nil {
                         return "ERROR: " + perr.Error()
                 }
@@ -624,10 +707,11 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 if num == 0 {
                         return "ERROR: merge_pr requires `number`"
                 }
-                if t.proj.GithubToken == "" || t.proj.RepoURL == "" {
+                repoURL := normalizeRepoURL(t.proj.RepoURL)
+                if t.proj.GithubToken == "" || repoURL == "" {
                         return "ERROR: project has no GitHub repo or token"
                 }
-                owner, repo, perr := parseOwnerRepo(t.proj.RepoURL)
+                owner, repo, perr := parseOwnerRepo(repoURL)
                 if perr != nil {
                         return "ERROR: " + perr.Error()
                 }
@@ -637,6 +721,11 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 }
                 t.a.hooks.Send(t.proj.ID, fmt.Sprintf("✅ Merged PR #%d", num))
                 return res
+
+        case "reset_sandbox":
+                t.a.resetSandbox(ctx, t.proj.ID)
+                t.planWritten = false // fresh sandbox = fresh slate, allow new plan
+                return "sandbox closed. Next tool call that needs it will spin up a fresh one with a clean clone."
 
         default:
                 return "ERROR: unknown tool " + name
