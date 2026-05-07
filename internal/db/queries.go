@@ -142,6 +142,7 @@ func (d *DB) SaveDocChunk(ctx context.Context, docID int, text string, tags []st
 }
 
 func (d *DB) SearchDocChunks(ctx context.Context, tags []string, limit int) ([]DocChunk, error) {
+        // Try tag-overlap search first.
         rows, err := d.pool.Query(ctx,
                 `SELECT id, doc_id, chunk_text, tags, relevance FROM doc_chunks
                  WHERE tags && $1
@@ -160,7 +161,32 @@ func (d *DB) SearchDocChunks(ctx context.Context, tags []string, limit int) ([]D
                 }
                 chunks = append(chunks, c)
         }
-        return chunks, rows.Err()
+        if err := rows.Err(); err != nil {
+                return nil, err
+        }
+
+        // Ingestion no longer LLM-tags chunks (everything is tagged "doc"), so
+        // callers requesting topical tags would get nothing. Fall back to recent
+        // chunks so the Builder can still see documentation.
+        if len(chunks) == 0 {
+                fbRows, err := d.pool.Query(ctx,
+                        `SELECT id, doc_id, chunk_text, tags, relevance FROM doc_chunks
+                         ORDER BY created_at DESC LIMIT $1`, limit)
+                if err != nil {
+                        return nil, err
+                }
+                defer fbRows.Close()
+                for fbRows.Next() {
+                        var c DocChunk
+                        if err := fbRows.Scan(&c.ID, &c.DocID, &c.ChunkText, &c.Tags, &c.Relevance); err != nil {
+                                return nil, err
+                        }
+                        chunks = append(chunks, c)
+                }
+                return chunks, fbRows.Err()
+        }
+
+        return chunks, nil
 }
 
 func (d *DB) GetAllDocChunks(ctx context.Context) ([]DocChunk, error) {

@@ -6,7 +6,7 @@ import "strings"
 var indexHTML string
 
 func init() {
-        indexHTML = strings.ReplaceAll(rawHTML, "BTICK", "`")
+	indexHTML = strings.ReplaceAll(rawHTML, "BTICK", "`")
 }
 
 const rawHTML = `<!DOCTYPE html>
@@ -22,715 +22,185 @@ const rawHTML = `<!DOCTYPE html>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Geist:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet"/>
   <style>
     :root {
-      --bg:         #0a0a0a;
-      --bg1:        #111111;
-      --bg2:        #1a1a1a;
-      --bg3:        #222222;
-      --line:       #2a2a2a;
-      --line2:      #333333;
-      --text:       #f0f0f0;
-      --text2:      #a0a0a0;
-      --text3:      #606060;
-      --white:      #ffffff;
-
-      --safe-top:    env(safe-area-inset-top,    0px);
-      --safe-bottom: env(safe-area-inset-bottom, 0px);
-      --safe-left:   env(safe-area-inset-left,   0px);
-      --safe-right:  env(safe-area-inset-right,  0px);
-
-      --font:       'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
-      --mono:       'Geist Mono', 'SF Mono', monospace;
+      --bg:    #0a0a0a;
+      --bg1:   #131313;
+      --bg2:   #1c1c1c;
+      --line:  #262626;
+      --line2: #333;
+      --text:  #f0f0f0;
+      --text2: #a0a0a0;
+      --text3: #666;
+      --accent:#3b82f6;
+      --ok:    #22c55e;
+      --warn:  #f59e0b;
+      --err:   #ef4444;
+      --safe-top:    env(safe-area-inset-top, 0);
+      --safe-bottom: env(safe-area-inset-bottom, 0);
+      --sans:  'Geist', system-ui, -apple-system, sans-serif;
+      --mono:  'Geist Mono', ui-monospace, monospace;
     }
 
-    *, *::before, *::after {
-      box-sizing: border-box;
-      margin: 0; padding: 0;
-      -webkit-tap-highlight-color: transparent;
-    }
-
-    html {
-      height: 100%;
-      height: -webkit-fill-available;
-      overscroll-behavior: none;
-    }
-
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
     body {
-      font-family: var(--font);
+      font-family: var(--sans);
       background: var(--bg);
       color: var(--text);
       font-size: 15px;
       line-height: 1.5;
-      min-height: 100vh;
-      min-height: -webkit-fill-available;
-      min-height: 100dvh;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+      overscroll-behavior: none;
     }
-
-    /* ── Spinner ──────────────────────────────────────────────── */
-    .auth-loading-wrap {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: var(--bg);
-    }
-
-    .spinner {
-      width: 28px; height: 28px;
-      border: 2px solid var(--line2);
-      border-top-color: var(--text2);
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-    }
-
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── Auth ─────────────────────────────────────────────────── */
-    .auth-wrap {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: calc(var(--safe-top) + 40px) 24px calc(var(--safe-bottom) + 40px);
-      background: var(--bg);
-    }
-
-    .auth-wordmark {
-      font-family: var(--mono);
-      font-size: 13px;
-      font-weight: 500;
-      letter-spacing: 0.2em;
-      text-transform: uppercase;
-      color: var(--text3);
-      margin-bottom: 6px;
-    }
-
-    .auth-title-big {
-      font-size: 32px;
-      font-weight: 700;
-      letter-spacing: -1px;
-      color: var(--white);
-      margin-bottom: 40px;
-    }
-
-    .auth-card {
-      width: 100%;
-      max-width: 360px;
-      background: var(--bg1);
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 28px 24px;
-    }
-
-    .auth-card-title {
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--text2);
-      margin-bottom: 24px;
-      font-family: var(--mono);
-      letter-spacing: 0.03em;
-      text-transform: uppercase;
-      font-size: 11px;
-    }
-
-    .field {
-      display: flex;
-      flex-direction: column;
-      gap: 7px;
-      margin-bottom: 14px;
-    }
-
-    .field label {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text3);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      font-family: var(--mono);
-    }
-
-    .field input {
-      background: var(--bg);
-      border: 1px solid var(--line2);
-      border-radius: 10px;
-      padding: 13px 14px;
-      color: var(--text);
-      font-size: 15px;
-      font-family: var(--font);
-      outline: none;
-      width: 100%;
-      transition: border-color 0.15s;
-      -webkit-appearance: none;
-      appearance: none;
-    }
-
-    .field input:focus {
-      border-color: var(--text2);
-    }
-
-    .field input::placeholder {
-      color: var(--text3);
-    }
-
-    .auth-error {
-      background: rgba(255,255,255,0.05);
-      border: 1px solid var(--line2);
-      color: var(--text2);
-      border-radius: 8px;
-      padding: 10px 14px;
-      font-size: 13px;
-      margin-bottom: 14px;
-    }
-
-    .auth-btn {
-      width: 100%;
-      padding: 14px;
-      border-radius: 10px;
-      border: none;
-      background: var(--white);
-      color: var(--bg);
-      font-size: 14px;
-      font-weight: 700;
-      font-family: var(--font);
-      cursor: pointer;
-      transition: opacity 0.15s, transform 0.1s;
-      margin-top: 6px;
-      letter-spacing: 0.01em;
-    }
-
-    .auth-btn:active { transform: scale(0.98); opacity: 0.85; }
-    .auth-btn:disabled { opacity: 0.25; cursor: not-allowed; transform: none; }
-
-    /* ── App shell ────────────────────────────────────────────── */
-    .app {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      position: relative;
-    }
-
-    /* ── Header ───────────────────────────────────────────────── */
-    .app-header {
-      flex-shrink: 0;
-      background: var(--bg);
-      border-bottom: 1px solid var(--line);
-      padding-top: calc(var(--safe-top) + 12px);
-      padding-bottom: 12px;
-      padding-left: calc(var(--safe-left) + 16px);
-      padding-right: calc(var(--safe-right) + 8px);
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      min-height: 0;
-    }
-
-    .header-left {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-shrink: 0;
-    }
-
-    .conn-dot {
-      width: 6px; height: 6px;
-      border-radius: 50%;
-      background: var(--text3);
-      flex-shrink: 0;
-      transition: background 0.4s;
-    }
-
-    .conn-dot.live { background: var(--text2); }
-
-    .state-pill {
-      font-family: var(--mono);
-      font-size: 10px;
-      font-weight: 500;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--text3);
-      border: 1px solid var(--line2);
-      border-radius: 4px;
-      padding: 3px 7px;
-      flex-shrink: 0;
-      transition: color 0.2s, border-color 0.2s;
-    }
-
-    .state-pill.executing { color: var(--text); border-color: var(--text2); }
-    .state-pill.clarifying { color: var(--text2); border-color: var(--text2); }
-    .state-pill.planning { color: var(--text2); border-color: var(--line2); }
-    .state-pill.error { color: var(--text2); border-color: var(--text3); }
-
-    .trust-num {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--text3);
-      flex-shrink: 0;
-    }
-
-    .header-project {
-      flex: 1;
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text2);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      text-align: center;
-    }
-
-    .builder-pill {
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--text3);
-      background: var(--bg1);
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      padding: 3px 8px;
-      max-width: 160px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      flex-shrink: 1;
-    }
-
-    .icon-btn {
-      background: none;
-      border: none;
-      cursor: pointer;
-      color: var(--text3);
-      width: 44px; height: 44px;
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      transition: background 0.12s, color 0.12s;
-    }
-
-    .icon-btn:active { background: var(--bg2); color: var(--text); }
-    .icon-btn svg { width: 20px; height: 20px; }
-
-    /* ── Feed ─────────────────────────────────────────────────── */
-    .feed {
-      flex: 1;
-      overflow-y: auto;
-      overflow-x: hidden;
-      -webkit-overflow-scrolling: touch;
-      padding: 12px 16px 8px;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    /* Scrollbar */
-    .feed::-webkit-scrollbar { width: 3px; }
-    .feed::-webkit-scrollbar-track { background: transparent; }
-    .feed::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 2px; }
-
-    .msg-row {
-      display: flex;
-      flex-direction: column;
-      max-width: 82%;
-      margin-bottom: 8px;
-    }
-
-    .msg-row.agent { align-self: flex-start; }
-    .msg-row.user-row { align-self: flex-end; }
-
-    .msg-bubble {
-      padding: 10px 13px;
-      font-size: 14px;
-      line-height: 1.6;
-      word-break: break-word;
-      border-radius: 14px;
-    }
-
-    /* Agent message */
-    .msg-bubble.message {
-      background: var(--bg1);
-      border: 1px solid var(--line);
-      border-bottom-left-radius: 4px;
-      color: var(--text);
-    }
-
-    /* Clarifying ask */
-    .msg-bubble.ask {
-      background: var(--bg1);
-      border: 1px solid var(--line2);
-      border-bottom-left-radius: 4px;
-      color: var(--text);
-    }
-
-    /* Clarifying ask — subtle left accent */
-    .msg-bubble.ask::before {
-      content: '';
-      display: block;
-      width: 2px;
-      height: 100%;
-      background: var(--text3);
-      position: absolute;
-      left: 0; top: 0;
-      border-radius: 2px 0 0 2px;
-    }
-
-    .msg-bubble.ask {
-      position: relative;
-      padding-left: 14px;
-    }
-
-    /* User reply */
-    .msg-bubble.reply {
-      background: var(--bg3);
-      border: 1px solid var(--line2);
-      border-bottom-right-radius: 4px;
-      color: var(--text);
-    }
-
-    .msg-bubble.history { opacity: 0.45; }
-
-    .msg-ts {
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--text3);
-      margin-top: 3px;
-      padding: 0 3px;
-    }
-
-    .msg-row.user-row .msg-ts { text-align: right; }
-
-    /* Markdown inside bubbles */
-    .msg-bubble p { margin: 0 0 6px; }
-    .msg-bubble p:last-child { margin-bottom: 0; }
-
-    .msg-bubble code {
-      background: var(--bg3);
-      padding: 2px 5px;
-      border-radius: 4px;
-      font-size: 12px;
-      font-family: var(--mono);
-    }
-
-    .msg-bubble pre {
-      background: var(--bg);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 10px 12px;
-      overflow-x: auto;
-      margin: 6px 0;
-      font-size: 12px;
-      font-family: var(--mono);
-    }
-
-    .msg-bubble pre code { background: none; padding: 0; }
-    .msg-bubble ul, .msg-bubble ol { padding-left: 18px; margin: 4px 0; }
-    .msg-bubble strong { color: var(--white); font-weight: 600; }
-
-    /* ── PR Card ──────────────────────────────────────────────── */
-    .pr-card {
-      border: 1px solid var(--line2);
-      border-radius: 12px;
-      background: var(--bg1);
-      padding: 14px 15px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      max-width: 100%;
-    }
-
-    .pr-card-header {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .pr-badge {
-      font-family: var(--mono);
-      font-size: 10px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      background: var(--bg3);
-      color: var(--text2);
-      border-radius: 4px;
-      padding: 3px 7px;
-      flex-shrink: 0;
-      margin-top: 1px;
-    }
-
-    .pr-title {
-      font-size: 14px;
-      font-weight: 600;
-      flex: 1;
-      color: var(--text);
-      line-height: 1.4;
-    }
-
-    .pr-link {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--text2);
-      text-decoration: none;
-      flex-shrink: 0;
-      border: 1px solid var(--line2);
-      border-radius: 4px;
-      padding: 3px 8px;
-    }
-
-    .pr-note {
-      font-size: 13px;
-      color: var(--text2);
-      line-height: 1.55;
-    }
-
-    .pr-diff {
-      font-size: 12px;
-      color: var(--text3);
-    }
-
-    .pr-diff summary {
-      cursor: pointer;
-      user-select: none;
-      margin-bottom: 6px;
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.04em;
-    }
-
-    .pr-diff pre {
-      background: var(--bg);
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 10px;
-      overflow-x: auto;
-      font-family: var(--mono);
-      font-size: 11px;
-      max-height: 240px;
-      overflow-y: auto;
-    }
-
-    .pr-ts {
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--text3);
-    }
-
-    /* ── Separator ────────────────────────────────────────────── */
-    .history-sep {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      color: var(--text3);
-      font-family: var(--mono);
-      font-size: 10px;
-      letter-spacing: 0.08em;
-      padding: 8px 0;
-    }
-
-    .history-sep::before, .history-sep::after {
-      content: '';
-      flex: 1;
-      height: 1px;
-      background: var(--line);
-    }
-
-    /* ── Bottom bar ───────────────────────────────────────────── */
-    .bottom-bar {
-      flex-shrink: 0;
-      background: var(--bg);
-      border-top: 1px solid var(--line);
-      padding: 8px calc(var(--safe-right) + 10px) calc(var(--safe-bottom) + 8px) calc(var(--safe-left) + 8px);
-      display: flex;
-      align-items: flex-end;
-      gap: 8px;
-    }
-
-    .reply-input {
-      flex: 1;
-      background: var(--bg1);
-      border: 1px solid var(--line2);
-      border-radius: 12px;
-      padding: 11px 14px;
-      color: var(--text);
-      font-size: 15px;
-      font-family: var(--font);
-      outline: none;
-      resize: none;
-      max-height: 120px;
-      overflow-y: auto;
-      line-height: 1.45;
-      transition: border-color 0.15s;
-      -webkit-overflow-scrolling: touch;
-      display: block;
-      width: 100%;
-    }
-
-    .reply-input:focus { border-color: var(--text3); }
-    .reply-input:disabled { opacity: 0.3; cursor: not-allowed; }
-    .reply-input::placeholder { color: var(--text3); }
-
-    .send-btn {
-      width: 42px; height: 42px;
-      border-radius: 10px;
-      border: none;
-      background: var(--white);
-      color: var(--bg);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      flex-shrink: 0;
-      transition: opacity 0.15s, transform 0.1s;
-    }
-
-    .send-btn:active { transform: scale(0.93); }
-    .send-btn:disabled { opacity: 0.15; cursor: not-allowed; transform: none; }
-    .send-btn svg { width: 18px; height: 18px; }
-
-    .upload-wrap { position: relative; flex-shrink: 0; }
-
-    .upload-badge {
-      position: absolute;
-      top: 6px; right: 6px;
-      width: 6px; height: 6px;
-      background: var(--text2);
-      border-radius: 50%;
-      border: 1.5px solid var(--bg);
-    }
-
-    /* ── Sheet ────────────────────────────────────────────────── */
-    .backdrop {
-      position: fixed; inset: 0;
-      background: rgba(0,0,0,0.7);
-      z-index: 100;
-      backdrop-filter: blur(4px);
-      -webkit-backdrop-filter: blur(4px);
-    }
-
-    .sheet {
-      position: fixed;
-      left: 0; right: 0; bottom: 0;
-      background: var(--bg1);
-      border-radius: 18px 18px 0 0;
-      border-top: 1px solid var(--line);
-      z-index: 101;
-      transform: translateY(100%);
-      transition: transform 0.3s cubic-bezier(0.32, 0, 0.15, 1);
-      max-height: 80vh;
-      overflow-y: auto;
-      -webkit-overflow-scrolling: touch;
-      padding-bottom: calc(var(--safe-bottom) + 16px);
-    }
-
-    .sheet.open { transform: translateY(0); }
-
-    .sheet-handle {
-      width: 32px; height: 3px;
-      background: var(--line2);
-      border-radius: 2px;
-      margin: 12px auto 8px;
-    }
-
-    .sheet-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 4px 16px 14px;
-      border-bottom: 1px solid var(--line);
-    }
-
-    .sheet-title {
-      font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 500;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--text3);
-    }
-
-    .sheet-section {
-      padding: 6px 0;
-      border-bottom: 1px solid var(--line);
-    }
-
-    .sheet-section:last-child { border-bottom: none; }
-
-    .sheet-label {
-      font-family: var(--mono);
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--text3);
-      padding: 10px 16px 4px;
-    }
-
-    .sheet-cmd {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      width: 100%;
-      padding: 13px 16px;
-      background: none;
-      border: none;
-      color: var(--text);
-      font-size: 15px;
-      font-family: var(--font);
-      cursor: pointer;
-      text-align: left;
-      transition: background 0.1s;
-    }
-
-    .sheet-cmd:active { background: var(--bg2); }
-
-    .cmd-icon {
-      font-size: 16px;
-      width: 24px;
-      text-align: center;
-      flex-shrink: 0;
-    }
-
-    .cmd-label { flex: 1; font-weight: 400; }
-
-    .cmd-desc {
-      font-size: 12px;
-      color: var(--text3);
-      font-family: var(--mono);
-    }
-
-    .sheet-cmd.danger { color: var(--text2); }
+    button { font-family: inherit; font-size: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+    input, textarea { font-family: inherit; font-size: inherit; color: inherit; background: none; border: none; outline: none; }
 
     [x-cloak] { display: none !important; }
+
+    /* ─── Auth screens ─────────────────────────────────────────────── */
+    .auth-loading-wrap, .auth-wrap {
+      min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 24px; padding-top: calc(var(--safe-top) + 24px);
+    }
+    .spinner {
+      width: 28px; height: 28px; border: 2px solid var(--line2); border-top-color: var(--text);
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .auth-wordmark { font-family: var(--mono); font-size: 12px; letter-spacing: 4px; color: var(--text3); margin-bottom: 14px; text-transform: uppercase; }
+    .auth-title-big { font-size: 28px; font-weight: 700; margin-bottom: 28px; }
+    .auth-card { width: 100%; max-width: 380px; background: var(--bg1); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+    .auth-card-title { font-family: var(--mono); font-size: 11px; letter-spacing: 2px; color: var(--text3); margin-bottom: 16px; text-transform: uppercase; }
+    .field { margin-bottom: 14px; }
+    .field label { display: block; font-family: var(--mono); font-size: 11px; letter-spacing: 1.5px; color: var(--text3); margin-bottom: 6px; text-transform: uppercase; }
+    .field input { display: block; width: 100%; padding: 11px 12px; background: var(--bg); border: 1px solid var(--line2); border-radius: 8px; }
+    .field input:focus { border-color: var(--accent); }
+    .auth-error { color: var(--err); font-size: 13px; margin: 8px 0 12px; }
+    .auth-btn { display: block; width: 100%; padding: 12px; background: var(--text); color: var(--bg); border-radius: 8px; font-weight: 600; margin-top: 6px; }
+    .auth-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* ─── App shell ──────────────────────────────────────────────── */
+    .app { height: 100dvh; display: flex; flex-direction: column; }
+
+    .app-header {
+      flex-shrink: 0;
+      padding: calc(var(--safe-top) + 10px) 14px 10px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; gap: 10px;
+    }
+    .brand { font-weight: 700; font-size: 16px; letter-spacing: -0.2px; }
+    .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text3); flex-shrink: 0; }
+    .conn-dot.live { background: var(--ok); box-shadow: 0 0 0 3px rgba(34,197,94,0.15); }
+    .state-pill {
+      font-family: var(--mono); font-size: 10px; letter-spacing: 1px;
+      padding: 3px 7px; border-radius: 4px; background: var(--bg2); color: var(--text2);
+      text-transform: uppercase;
+    }
+    .state-pill.thinking { background: rgba(59,130,246,0.15); color: var(--accent); }
+    .state-pill.paused   { background: rgba(245,158,11,0.15); color: var(--warn); }
+    .state-pill.ready    { background: rgba(34,197,94,0.12);  color: var(--ok); }
+
+    .nav-tabs { display: flex; gap: 2px; margin-left: auto; background: var(--bg1); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+    .nav-tab {
+      padding: 6px 12px; border-radius: 6px; font-size: 13px; font-weight: 500; color: var(--text2);
+    }
+    .nav-tab.active { background: var(--bg2); color: var(--text); }
+
+    .pause-btn {
+      padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 500;
+      background: var(--bg1); border: 1px solid var(--line2); color: var(--text);
+    }
+    .pause-btn.paused { background: var(--warn); border-color: var(--warn); color: #000; }
+
+    /* ─── Chat view ──────────────────────────────────────────────── */
+    .chat-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+    .messages {
+      flex: 1; overflow-y: auto; padding: 12px 12px 6px;
+      display: flex; flex-direction: column; gap: 8px;
+      -webkit-overflow-scrolling: touch;
+    }
+    .msg-row { display: flex; }
+    .msg-row.from-user { justify-content: flex-end; }
+    .bubble {
+      max-width: 82%; padding: 9px 13px; border-radius: 14px; line-height: 1.45;
+      word-wrap: break-word; overflow-wrap: anywhere; font-size: 14.5px;
+    }
+    .bubble.agent { background: var(--bg1); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+    .bubble.user  { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+    .bubble.ask   { background: var(--bg2); border: 1px solid var(--accent); border-bottom-left-radius: 4px; }
+    .bubble.system{ background: transparent; color: var(--text3); font-size: 12.5px; font-family: var(--mono); text-align: center; max-width: 100%; padding: 4px 8px; }
+    .bubble p { margin: 0 0 0.5em; }
+    .bubble p:last-child { margin: 0; }
+    .bubble code { font-family: var(--mono); font-size: 12.5px; background: rgba(0,0,0,0.35); padding: 1px 5px; border-radius: 3px; }
+    .bubble pre { background: var(--bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 6px 0; font-size: 12.5px; }
+    .bubble pre code { background: none; padding: 0; }
+    .bubble ul, .bubble ol { margin: 4px 0 4px 20px; }
+    .bubble strong { font-weight: 600; }
+    .ts { font-family: var(--mono); font-size: 10px; color: var(--text3); margin: 2px 6px 0; }
+    .from-user .ts { text-align: right; }
+
+    .composer {
+      flex-shrink: 0;
+      padding: 8px 10px calc(var(--safe-bottom) + 8px);
+      background: var(--bg); border-top: 1px solid var(--line);
+      display: flex; align-items: flex-end; gap: 8px;
+    }
+    .composer textarea {
+      flex: 1; resize: none; padding: 10px 12px; background: var(--bg1);
+      border: 1px solid var(--line2); border-radius: 18px; max-height: 120px; min-height: 40px;
+      line-height: 1.4;
+    }
+    .composer textarea:focus { border-color: var(--accent); }
+    .send-btn {
+      width: 40px; height: 40px; border-radius: 50%; background: var(--accent); color: #fff;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .send-btn:disabled { background: var(--line2); cursor: not-allowed; }
+    .send-btn svg { width: 18px; height: 18px; }
+
+    /* ─── Settings view ────────────────────────────────────────── */
+    .settings-view { flex: 1; overflow-y: auto; padding: 16px 14px calc(var(--safe-bottom) + 24px); }
+    .settings-section { margin-bottom: 22px; }
+    .settings-section h2 { font-size: 13px; font-family: var(--mono); letter-spacing: 1.5px; color: var(--text3); text-transform: uppercase; margin-bottom: 8px; }
+    .settings-card { background: var(--bg1); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+    .settings-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+    .settings-row:last-child { border-bottom: none; }
+    .settings-row .meta { font-family: var(--mono); font-size: 11px; color: var(--text3); }
+    .settings-action {
+      padding: 9px 14px; border-radius: 8px; background: var(--bg2); border: 1px solid var(--line2);
+      font-size: 13px; font-weight: 500;
+    }
+    .settings-action.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
+    .settings-action.danger  { color: var(--err); border-color: rgba(239,68,68,0.3); }
+    .settings-action:disabled { opacity: 0.5; cursor: not-allowed; }
+    .empty { color: var(--text3); font-size: 13px; text-align: center; padding: 16px; }
+    pre.console {
+      background: var(--bg); padding: 12px; border-radius: 8px; font-family: var(--mono); font-size: 11.5px;
+      max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text2);
+      border: 1px solid var(--line);
+    }
+    .desc { color: var(--text2); font-size: 13px; margin-bottom: 10px; }
   </style>
 </head>
 <body x-data="kaptaan()" x-init="init()" x-cloak>
 
   <!-- Loading -->
-  <div x-show="screen==='loading'" class="auth-loading-wrap">
-    <div class="spinner"></div>
-  </div>
+  <div x-show="screen==='loading'" class="auth-loading-wrap"><div class="spinner"></div></div>
 
   <!-- Auth -->
   <div x-show="screen==='setup'||screen==='login'" class="auth-wrap">
     <div class="auth-wordmark">Kaptaan</div>
     <div class="auth-title-big" x-text="screen==='setup' ? 'Create account' : 'Welcome back'"></div>
-
     <div class="auth-card">
       <div class="auth-card-title" x-text="screen==='setup' ? 'Setup' : 'Sign in'"></div>
       <form @submit.prevent="submitAuth()">
         <div class="field">
           <label>Username</label>
-          <input type="text" x-model="authUser"
-            autocomplete="username" autocapitalize="off"
-            autocorrect="off" spellcheck="false"
-            placeholder="username"
-            :disabled="authBusy"/>
+          <input type="text" x-model="authUser" autocomplete="username" autocapitalize="off"
+            autocorrect="off" spellcheck="false" placeholder="username" :disabled="authBusy"/>
         </div>
         <div class="field">
           <label>Password</label>
@@ -751,206 +221,143 @@ const rawHTML = `<!DOCTYPE html>
   <!-- App -->
   <div x-show="screen==='app'" class="app">
 
-    <!-- Header -->
     <header class="app-header">
-      <div class="header-left">
-        <div class="conn-dot" :class="connected?'live':''"></div>
-        <span class="state-pill"
-          :class="(status.state||'').toLowerCase()"
-          x-text="status.state||'idle'"></span>
+      <div class="conn-dot" :class="connected?'live':''"></div>
+      <div class="brand">Kaptaan</div>
+      <span class="state-pill" :class="(status.state||'').toLowerCase()" x-text="status.state||'ready'"></span>
+
+      <div class="nav-tabs">
+        <button class="nav-tab" :class="view==='chat'?'active':''" @click="view='chat'">Chat</button>
+        <button class="nav-tab" :class="view==='settings'?'active':''" @click="view='settings'; loadSettings()">Settings</button>
       </div>
 
-      <div class="header-project" x-text="status.project||'Kaptaan'"></div>
-
-      <div class="builder-pill" x-show="builderStatus.milestone" x-text="builderStatusLabel()"></div>
-
-      <button class="icon-btn" @click="showMenu=true" aria-label="Commands">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-          stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="4" y1="8" x2="20" y2="8"/>
-          <line x1="4" y1="16" x2="20" y2="16"/>
-        </svg>
-      </button>
+      <button class="pause-btn" :class="status.state==='paused'?'paused':''"
+        @click="togglePause()"
+        x-text="status.state==='paused'?'Resume':'Pause'"></button>
     </header>
 
-    <!-- Feed -->
-    <div class="feed" id="feed" x-ref="feed">
-      <template x-for="(m, i) in messages" :key="i">
-        <div>
-          <div x-show="m.type==='separator'" class="history-sep" x-text="m.text"></div>
-
-          <template x-if="m.isPRReview">
-            <div class="msg-row agent">
-              <div class="pr-card">
-                <div class="pr-card-header">
-                  <span class="pr-badge">PR ready</span>
-                  <span class="pr-title" x-text="m.task_title"></span>
-                  <a class="pr-link" :href="m.pr_url" target="_blank" rel="noopener noreferrer">View ↗</a>
-                </div>
-                <div class="pr-note" x-html="renderMsg(m.manager_note)"></div>
-                <details class="pr-diff">
-                  <summary>show diff</summary>
-                  <pre x-text="m.diff_summary"></pre>
-                </details>
-                <div class="pr-ts" x-text="m.ts"></div>
-              </div>
-            </div>
-          </template>
-
-          <div x-show="m.type!=='separator' && !m.isPRReview"
-            class="msg-row"
-            :class="m.type==='reply' ? 'user-row' : 'agent'">
-            <div class="msg-bubble"
-              :class="[m.type, m.history?'history':'']"
-              x-html="renderMsg(m.text)"></div>
-            <div class="msg-ts" x-text="m.ts"></div>
+    <!-- Chat view -->
+    <main x-show="view==='chat'" class="chat-view">
+      <div class="messages" x-ref="msgs">
+        <template x-if="messages.length===0">
+          <div class="empty" style="margin-top: 24px;">
+            Send a message to start. Upload product docs in Settings so I can ground my plans in them.
           </div>
-        </div>
-      </template>
-      <div id="feed-end"></div>
-    </div>
+        </template>
+        <template x-for="(m, i) in messages" :key="i">
+          <div>
+            <template x-if="m.type==='separator'">
+              <div class="bubble system" x-text="m.text"></div>
+            </template>
+            <template x-if="m.type!=='separator'">
+              <div :class="'msg-row ' + (isUser(m) ? 'from-user' : '')">
+                <div :class="'bubble ' + bubbleClass(m)" x-html="renderMsg(m.text)"></div>
+              </div>
+            </template>
+            <template x-if="m.type!=='separator' && m.ts">
+              <div :class="'ts ' + (isUser(m) ? '' : '')" x-text="m.ts"></div>
+            </template>
+          </div>
+        </template>
+        <div id="feed-end"></div>
+      </div>
 
-    <!-- Bottom bar -->
-    <div class="bottom-bar">
-      <div class="upload-wrap">
-        <button class="icon-btn" @click="$refs.fileIn.click()" :disabled="uploading" aria-label="Upload doc">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-            stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
+      <div class="composer">
+        <textarea x-model="input" x-ref="inputEl" rows="1" placeholder="Ask Kaptaan anything…"
+          @input="autoResize($el)"
+          @keydown.enter.prevent="if(!$event.shiftKey && input.trim()) send()"></textarea>
+        <button class="send-btn" :disabled="!input.trim()" @click="send()" aria-label="Send">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"/>
+            <polygon points="22 2 15 22 11 13 2 9 22 2" fill="currentColor" stroke="none"/>
           </svg>
         </button>
-        <div class="upload-badge" x-show="uploading"></div>
       </div>
-      <input type="file" accept=".md" x-ref="fileIn" @change="uploadDoc($event)" style="display:none"/>
+    </main>
 
-      <textarea
-        class="reply-input"
-        x-model="replyText"
-        x-ref="replyInput"
-        :placeholder="askActive ? 'Reply…' : 'Type a message…'"
-        rows="1"
-        @input="autoResize($el)"
-        @keydown.enter.prevent="if(replyText.trim()) sendReply()"
-      ></textarea>
+    <!-- Settings view -->
+    <main x-show="view==='settings'" class="settings-view">
 
-      <button class="send-btn"
-        :disabled="!replyText.trim()"
-        @click="sendReply()"
-        aria-label="Send">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="22" y1="2" x2="11" y2="13"/>
-          <polygon points="22 2 15 22 11 13 2 9 22 2" fill="currentColor" stroke="none"/>
-        </svg>
-      </button>
-    </div>
-  </div>
+      <section class="settings-section">
+        <h2>Project documents</h2>
+        <div class="desc">Upload Markdown specs the planner should ground its work in.</div>
+        <div class="settings-card">
+          <div style="display:flex; gap:8px; margin-bottom: 10px;">
+            <button class="settings-action primary" @click="$refs.fileIn.click()" :disabled="uploading">
+              <span x-show="!uploading">Upload .md</span>
+              <span x-show="uploading">Uploading…</span>
+            </button>
+            <button class="settings-action" @click="loadDocs()">Refresh</button>
+          </div>
+          <input type="file" accept=".md,text/markdown" x-ref="fileIn" @change="upload($event)" hidden/>
 
-  <!-- Sheet backdrop -->
-  <div x-show="showMenu" class="backdrop" @click="showMenu=false"
-    x-transition:enter="transition ease-out duration-200"
-    x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-    x-transition:leave="transition ease-in duration-150"
-    x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"></div>
+          <template x-if="docs.length===0">
+            <div class="empty">No documents uploaded yet.</div>
+          </template>
+          <template x-for="d in docs" :key="d.id">
+            <div class="settings-row">
+              <span x-text="d.filename"></span>
+              <span class="meta" x-text="d.uploaded"></span>
+            </div>
+          </template>
+        </div>
+      </section>
 
-  <!-- Command sheet -->
-  <div class="sheet" :class="showMenu ? 'open' : ''">
-    <div class="sheet-handle"></div>
-    <div class="sheet-header">
-      <span class="sheet-title">Commands</span>
-      <button class="icon-btn" @click="showMenu=false" aria-label="Close">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-          stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="18" y1="6" x2="6" y2="18"/>
-          <line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
-    </div>
+      <section class="settings-section">
+        <h2>Recent activity</h2>
+        <div class="settings-card">
+          <div style="display:flex; gap:8px; margin-bottom:10px;">
+            <button class="settings-action" @click="loadLogs()">Refresh logs</button>
+          </div>
+          <pre class="console" x-text="logsText || 'No logs yet.'"></pre>
+        </div>
+      </section>
 
-    <div class="sheet-section">
-      <div class="sheet-label">Info</div>
-      <button class="sheet-cmd" @click="cmd('/api/status','status')">
-        <span class="cmd-icon">◈</span>
-        <span class="cmd-label">Status</span>
-        <span class="cmd-desc">Agent state</span>
-      </button>
-      <button class="sheet-cmd" @click="cmd('/api/tasks','tasks')">
-        <span class="cmd-icon">≡</span>
-        <span class="cmd-label">Tasks</span>
-        <span class="cmd-desc">Current plan</span>
-      </button>
-      <button class="sheet-cmd" @click="cmd('/api/log','log')">
-        <span class="cmd-icon">⌇</span>
-        <span class="cmd-label">Log</span>
-        <span class="cmd-desc">Recent events</span>
-      </button>
-      <button class="sheet-cmd" @click="cmd('/api/usage','usage')">
-        <span class="cmd-icon">↗</span>
-        <span class="cmd-label">Usage</span>
-        <span class="cmd-desc">LLM token usage</span>
-      </button>
-    </div>
+      <section class="settings-section">
+        <h2>LLM usage</h2>
+        <div class="settings-card">
+          <div style="display:flex; gap:8px; margin-bottom:10px;">
+            <button class="settings-action" @click="loadUsage()">Refresh usage</button>
+          </div>
+          <pre class="console" x-text="usageText || 'No usage recorded yet.'"></pre>
+        </div>
+      </section>
 
-    <div class="sheet-section">
-      <div class="sheet-label">Actions</div>
-      <button class="sheet-cmd" @click="cmd('/api/scan','scan')">
-        <span class="cmd-icon">⊙</span>
-        <span class="cmd-label">Scan repo</span>
-        <span class="cmd-desc">Find gaps &amp; bugs</span>
-      </button>
-      <button class="sheet-cmd" @click="cmd('/api/pause','pause')">
-        <span class="cmd-icon">⏸</span>
-        <span class="cmd-label">Pause</span>
-        <span class="cmd-desc">Pause the agent</span>
-      </button>
-      <button class="sheet-cmd" @click="cmd('/api/resume','resume')">
-        <span class="cmd-icon">▶</span>
-        <span class="cmd-label">Resume</span>
-        <span class="cmd-desc">Resume the agent</span>
-      </button>
-      <button class="sheet-cmd" @click="cmd('/api/replan','replan')">
-        <span class="cmd-icon">↺</span>
-        <span class="cmd-label">Replan</span>
-        <span class="cmd-desc">Regenerate the plan</span>
-      </button>
-    </div>
+      <section class="settings-section">
+        <h2>Session</h2>
+        <div class="settings-card">
+          <div style="display:flex; gap:8px;">
+            <button class="settings-action" @click="clearChat()">Clear chat history</button>
+            <button class="settings-action danger" @click="logout()">Logout</button>
+          </div>
+        </div>
+      </section>
+    </main>
 
-    <div class="sheet-section">
-      <div class="sheet-label">Danger</div>
-      <button class="sheet-cmd" @click="cmd('/api/clear','clear')">
-        <span class="cmd-icon">⌫</span>
-        <span class="cmd-label">Clear history</span>
-        <span class="cmd-desc">Wipe message feed</span>
-      </button>
-      <button class="sheet-cmd danger" @click="logout()">
-        <span class="cmd-icon">→</span>
-        <span class="cmd-label">Logout</span>
-      </button>
-    </div>
   </div>
 
 <script>
 function kaptaan() {
   return {
-    // ── Auth state
     screen:   'loading',
-    authUser: '',
-    authPass: '',
-    authErr:  '',
-    authBusy: false,
+    view:     'chat',
 
-    // ── App state
+    authUser: '', authPass: '', authErr: '', authBusy: false,
+
     messages:  [],
-    status:    { state: 'new', trust: 0, project: '', plan: 'none' },
-    builderStatus: { taskTitle: '', milestone: '', detail: '' },
-    askActive: false,
-    replyText: '',
-    showMenu:  false,
-    uploading: false,
+    status:    { state: 'ready', project: '' },
+    input:     '',
     connected: false,
     _es:       null,
 
-    // ── Lifecycle
+    // Settings state
+    docs:      [],
+    logsText:  '',
+    usageText: '',
+    uploading: false,
+
+    // ── Lifecycle ──────────────────────────────────────────────
     async init() {
       try {
         const r = await fetch('/api/auth/status');
@@ -966,47 +373,34 @@ function kaptaan() {
       }
     },
 
-    // ── Auth
+    // ── Auth ───────────────────────────────────────────────────
     async submitAuth() {
-      this.authErr  = '';
-      this.authBusy = true;
+      this.authErr = ''; this.authBusy = true;
       const url = this.screen === 'setup' ? '/api/auth/setup' : '/api/auth/login';
       try {
         const r = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: this.authUser, password: this.authPass }),
         });
         const d = await r.json();
-        if (!r.ok) {
-          this.authErr = d.error || 'Something went wrong';
-        } else {
-          this.authPass = '';
-          this.screen   = 'app';
+        if (!r.ok) { this.authErr = d.error || 'Something went wrong'; }
+        else {
+          this.authPass = ''; this.screen = 'app';
           this.$nextTick(() => this.connectSSE());
         }
-      } catch {
-        this.authErr = 'Network error — please try again';
-      } finally {
-        this.authBusy = false;
-      }
+      } catch { this.authErr = 'Network error — please try again'; }
+      finally { this.authBusy = false; }
     },
 
     async logout() {
-      this.showMenu = false;
       await fetch('/api/auth/logout', { method: 'POST' });
       if (this._es) { this._es.close(); this._es = null; }
-      this.messages   = [];
-      this.connected  = false;
-      this.builderStatus = { taskTitle: '', milestone: '', detail: '' };
-      this.askActive  = false;
-      this.replyText  = '';
-      this.authUser   = '';
-      this.authPass   = '';
-      this.screen     = 'login';
+      this.messages = []; this.docs = []; this.connected = false;
+      this.input = ''; this.authUser = ''; this.authPass = '';
+      this.view = 'chat'; this.screen = 'login';
     },
 
-    // ── SSE
+    // ── SSE ────────────────────────────────────────────────────
     connectSSE() {
       if (this._es) this._es.close();
       const es = new EventSource('/events');
@@ -1016,44 +410,24 @@ function kaptaan() {
         try { this.status = JSON.parse(e.data); } catch {}
       });
 
-      es.addEventListener('ask_active', () => { this.askActive = true; });
-      es.addEventListener('ask_done',   () => { this.askActive = false; });
-
       es.addEventListener('msg', e => {
         try {
           const m = JSON.parse(e.data);
-          if (m.type === 'builder_status') {
-            this.builderStatus = {
-              taskTitle: m.task_title || '',
-              milestone: m.milestone || '',
-              detail: m.detail || '',
-            };
-            if (m.milestone === 'pr_opened') {
-              setTimeout(() => {
-                this.builderStatus = { taskTitle: '', milestone: '', detail: '' };
-              }, 5000);
-            }
-            return;
-          }
+          if (m.type === 'builder_status') return;     // not shown in simplified UI
           if (m.type === 'pr_review') {
-            this.push({ ...m, isPRReview: true });
-            this.askActive = true;
+            const text = '**PR ready:** ' + (m.pr_url || '(local)') +
+              '\n\n' + (m.manager_note || '') +
+              '\n\nReply **yes** to merge or **no** to reject.';
+            this.push({ type: 'ask', text, ts: m.ts });
             return;
           }
           this.push(m);
-          if (m.type === 'ask') this.askActive = true;
         } catch {}
       });
 
-      es.addEventListener('history_end', () => {
-        if (this.messages.length > 0) {
-          this.messages.push({ type: 'separator', text: 'earlier' });
-        }
-        this.scrollBottom();
-      });
+      es.addEventListener('history_end', () => { this.scrollBottom(); });
 
       es.onopen = () => { this.connected = true; };
-
       es.onerror = () => {
         this.connected = false;
         fetch('/api/auth/status').then(r => r.json()).then(d => {
@@ -1062,7 +436,7 @@ function kaptaan() {
       };
     },
 
-    // ── Helpers
+    // ── Helpers ───────────────────────────────────────────────
     push(m) {
       this.messages.push(m);
       this.$nextTick(() => this.scrollBottom());
@@ -1073,67 +447,98 @@ function kaptaan() {
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'end' });
     },
 
+    isUser(m) { return m.type === 'reply'; },
+    bubbleClass(m) {
+      if (m.type === 'reply')   return 'user';
+      if (m.type === 'ask')     return 'ask';
+      if (m.type === 'message') return 'agent';
+      return 'agent';
+    },
     renderMsg(text) {
       if (!text) return '';
       return DOMPurify.sanitize(marked.parse(text));
     },
 
-    builderStatusLabel() {
-      const icons = { started: '○', coding: '◎', building: '◈', testing: '◉', pr_opened: '●' };
-      const icon = icons[this.builderStatus.milestone] || '○';
-      return icon + ' ' + this.builderStatus.taskTitle + ': ' + this.builderStatus.detail;
+    autoResize(el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 120) + 'px';
     },
 
-    // ── Reply
-    async sendReply() {
-      const text = this.replyText.trim();
+    // ── Send chat message ────────────────────────────────────
+    async send() {
+      const text = this.input.trim();
       if (!text) return;
-      this.replyText = '';
-      this.$nextTick(() => this.autoResize(this.$refs.replyInput));
+      this.input = '';
+      this.$nextTick(() => this.autoResize(this.$refs.inputEl));
       const r = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       });
       if (r.status === 401) { this.screen = 'login'; }
     },
 
-    // ── Commands
-    async cmd(url, label) {
-      this.showMenu = false;
-      const r = await fetch(url);
-      if (r.status === 401) { this.screen = 'login'; return; }
-      const d = await r.json();
-      const keys = Object.keys(d);
-      let text;
-      if (keys.length === 1 && typeof d[keys[0]] === 'string') {
-        text = '**' + label.toUpperCase() + '**\n' + d[keys[0]];
-      } else {
-        text = '**' + label.toUpperCase() + '**\nBTICKBTICKBTICKjson\n' + JSON.stringify(d, null, 2) + '\nBTICKBTICKBTICK';
-      }
-      this.push({ type: 'message', text: text, ts: new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) });
+    // ── Pause / Resume ────────────────────────────────────────
+    async togglePause() {
+      const url = this.status.state === 'paused' ? '/api/resume' : '/api/pause';
+      await fetch(url, { method: 'POST' });
     },
 
-    // ── Upload
-    async uploadDoc(event) {
+    // ── Settings actions ──────────────────────────────────────
+    async loadSettings() {
+      this.loadDocs();
+      this.loadLogs();
+      this.loadUsage();
+    },
+
+    async loadDocs() {
+      try {
+        const r = await fetch('/api/docs');
+        if (!r.ok) return;
+        const d = await r.json();
+        this.docs = d.docs || [];
+      } catch {}
+    },
+
+    async loadLogs() {
+      try {
+        const r = await fetch('/api/log');
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!d.logs || d.logs.length === 0) { this.logsText = 'No logs yet.'; return; }
+        this.logsText = d.logs.map(l => '[' + l.time + '] ' + l.event + ' — ' + l.text).join('\n');
+      } catch {}
+    },
+
+    async loadUsage() {
+      try {
+        const r = await fetch('/api/usage');
+        if (!r.ok) return;
+        const d = await r.json();
+        const fmt = (rows) => rows && rows.length
+          ? rows.map(u => '  ' + u.provider + '/' + u.model + ': in=' + u.prompt_tokens + ' out=' + u.completion_tokens + ' calls=' + u.calls).join('\n')
+          : '  (none)';
+        this.usageText = 'TODAY:\n' + fmt(d.today) + '\n\nALL TIME:\n' + fmt(d.all);
+      } catch {}
+    },
+
+    async upload(event) {
       const file = event.target.files[0];
       if (!file) return;
       event.target.value = '';
       this.uploading = true;
-      const fd = new FormData();
-      fd.append('file', file);
       try {
+        const fd = new FormData();
+        fd.append('file', file);
         const r = await fetch('/api/upload', { method: 'POST', body: fd });
         if (r.status === 401) { this.screen = 'login'; return; }
-      } finally {
-        this.uploading = false;
-      }
+        await this.loadDocs();
+      } finally { this.uploading = false; }
     },
 
-    // ── Auto-resize textarea
-    autoResize(el) {
-      el.style.height = 'auto';
-      el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    async clearChat() {
+      if (!confirm('Clear all chat messages?')) return;
+      const r = await fetch('/api/clear', { method: 'POST' });
+      if (r.ok) { this.messages = []; }
     },
   };
 }

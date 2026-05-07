@@ -2,19 +2,21 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/cto-agent/cto-agent/internal/db"
-	"github.com/cto-agent/cto-agent/internal/llm"
 )
 
-func IngestDoc(ctx context.Context, database *db.DB, pool *llm.Pool, filename, content string) (int, error) {
-	return ingestDoc(ctx, database, pool, filename, content)
+// IngestDoc saves the markdown doc and splits it into chunks. We deliberately
+// skip per-chunk LLM tagging — it was the source of long upload hangs (slow or
+// rate-limited providers) and the planner already gets the full chunks back at
+// retrieval time, which is enough context.
+func IngestDoc(ctx context.Context, database *db.DB, filename, content string) (int, error) {
+	return ingestDoc(ctx, database, filename, content)
 }
 
-func ingestDoc(ctx context.Context, database *db.DB, pool *llm.Pool, filename, content string) (int, error) {
+func ingestDoc(ctx context.Context, database *db.DB, filename, content string) (int, error) {
 	docID, err := database.SaveDoc(ctx, filename, content)
 	if err != nil {
 		return 0, fmt.Errorf("save doc: %w", err)
@@ -25,25 +27,18 @@ func ingestDoc(ctx context.Context, database *db.DB, pool *llm.Pool, filename, c
 		chunks = []string{content}
 	}
 
-	tagged := 0
+	saved := 0
 	for _, chunk := range chunks {
 		if strings.TrimSpace(chunk) == "" {
 			continue
 		}
-
-		tags, relevance, err := tagChunk(ctx, pool, chunk)
-		if err != nil {
-			tags = []string{"other"}
-			relevance = "untagged"
+		if err := database.SaveDocChunk(ctx, docID, chunk, []string{"doc"}, "doc"); err != nil {
+			return saved, fmt.Errorf("save chunk: %w", err)
 		}
-
-		if err := database.SaveDocChunk(ctx, docID, chunk, tags, relevance); err != nil {
-			return tagged, fmt.Errorf("save chunk: %w", err)
-		}
-		tagged++
+		saved++
 	}
 
-	return tagged, nil
+	return saved, nil
 }
 
 func chunkMarkdown(content string) []string {
@@ -98,98 +93,26 @@ func splitLarge(s string, maxLen int) []string {
 	return chunks
 }
 
-func tagChunk(ctx context.Context, pool *llm.Pool, chunk string) (tags []string, relevance string, err error) {
-	prompt := fmt.Sprintf(`You are tagging a documentation chunk for a software project.
-
-Chunk:
----
-%s
----
-
-Respond ONLY with valid JSON (no markdown, no explanation):
-{
-  "tags": ["one or more of: feature, api, schema, rule, ui, data, config, auth, infra, other"],
-  "relevance": "short label like: user auth, payment flow, data model, API endpoints, deployment rules"
-}`, chunk)
-
-	resp, err := pool.ChatJSON(ctx, []llm.Message{
-		{Role: "user", Content: prompt},
-	})
+// BuildDocContext returns relevant doc chunks formatted for prompt injection.
+// We return the most-recent chunks (no tag filtering) — the planner gets the
+// full corpus, capped at maxChunks.
+func BuildDocContext(ctx context.Context, database *db.DB, _ string, maxChunks int) (string, error) {
+	chunks, err := database.GetAllDocChunks(ctx)
 	if err != nil {
-		return nil, "", err
+		return "", err
 	}
-
-	if len(resp.Choices) == 0 {
-		return nil, "", fmt.Errorf("empty response")
+	if len(chunks) > maxChunks {
+		chunks = chunks[:maxChunks]
 	}
-
-	text := cleanJSON(resp.Choices[0].Message.Content)
-
-	var result struct {
-		Tags      []string `json:"tags"`
-		Relevance string   `json:"relevance"`
-	}
-	if err := json.Unmarshal([]byte(text), &result); err != nil {
-		return []string{"other"}, "untagged", nil
-	}
-
-	if len(result.Tags) == 0 {
-		result.Tags = []string{"other"}
-	}
-	if result.Relevance == "" {
-		result.Relevance = "general"
-	}
-
-	return result.Tags, result.Relevance, nil
-}
-
-func BuildDocContext(ctx context.Context, database *db.DB, topic string, maxChunks int) (string, error) {
-	tags := topicToTags(topic)
-
-	chunks, err := database.SearchDocChunks(ctx, tags, maxChunks)
-	if err != nil || len(chunks) == 0 {
-		chunks, err = database.GetAllDocChunks(ctx)
-		if err != nil {
-			return "", err
-		}
-		if len(chunks) > maxChunks {
-			chunks = chunks[:maxChunks]
-		}
-	}
-
 	if len(chunks) == 0 {
-		return "No documentation available.", nil
+		return "(no documentation uploaded yet)", nil
 	}
 
 	var sb strings.Builder
-	sb.WriteString("=== RELEVANT DOCUMENTATION ===\n\n")
+	sb.WriteString("=== PROJECT DOCUMENTATION ===\n\n")
 	for _, c := range chunks {
-		sb.WriteString(fmt.Sprintf("[%s | tags: %s]\n", c.Relevance, strings.Join(c.Tags, ",")))
 		sb.WriteString(c.ChunkText)
 		sb.WriteString("\n\n---\n\n")
 	}
 	return sb.String(), nil
-}
-
-func topicToTags(topic string) []string {
-	topic = strings.ToLower(topic)
-	tagMap := map[string][]string{
-		"auth":    {"auth", "rule", "api"},
-		"api":     {"api", "feature"},
-		"schema":  {"schema", "data"},
-		"ui":      {"ui", "feature"},
-		"config":  {"config", "infra"},
-		"deploy":  {"infra", "config"},
-		"test":    {"feature", "rule"},
-		"model":   {"schema", "data"},
-		"feature": {"feature"},
-		"rule":    {"rule"},
-	}
-
-	for keyword, tags := range tagMap {
-		if strings.Contains(topic, keyword) {
-			return tags
-		}
-	}
-	return []string{"feature", "rule", "api"}
 }

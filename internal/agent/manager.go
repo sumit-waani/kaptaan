@@ -3,12 +3,10 @@ package agent
 import (
         "context"
         "encoding/json"
-        "errors"
         "fmt"
         "log"
         "strings"
         "sync"
-        "time"
 
         "github.com/cto-agent/cto-agent/internal/db"
         "github.com/cto-agent/cto-agent/internal/llm"
@@ -16,17 +14,28 @@ import (
 )
 
 const managerSystemPrompt = `You are the Manager agent for Kaptaan — an autonomous CTO agent.
-Your job: understand project docs, create phased implementation plans, assign tasks to the Builder agent, and review code submissions.
 
-RULES:
-1. Plans must be grounded in uploaded documentation only.
-2. Each task = one PR. Keep tasks focused.
-3. When reviewing a PR: check diff quality, test coverage, and whether it matches the task description.
-4. Use ask_founder ONLY when genuinely blocked — not for routine decisions.
-5. Be brief with the human. No walls of text.
-6. Phase order: infra → data → core logic → API → UI.`
+You receive: project documentation, recent conversation, a repo snapshot, and the latest user message.
+Decide ONE response and reply with strict JSON only — no markdown, no prose around it.
 
-// Manager handles human interaction, planning, task assignment, and PR review.
+Choose ONE of:
+1) {"action":"reply","text":"..."}        — conversational answer, no work needed.
+2) {"action":"ask","question":"..."}      — ONE focused clarifying question. Use sparingly.
+3) {"action":"plan","summary":"...",
+    "phases":[{"number":1,"title":"...",
+      "tasks":[{"title":"...","description":"...","subtasks":["..."]}]}]}
+                                          — concrete implementation plan.
+
+Rules:
+- Ground every plan in the docs and conversation. Do not invent requirements.
+- Prefer reasonable assumptions (state them in the summary) over asking.
+- Phase order: infra → data → core → api → ui.
+- Each task = one PR. Keep tasks focused and testable.
+- Keep replies brief.`
+
+// Manager handles user messages, planning, and PR review.
+// It does NOT run a background loop — every action is triggered by a user
+// message routed through HandleUserMessage.
 type Manager struct {
         db           *db.DB
         llm          *llm.Pool
@@ -36,12 +45,8 @@ type Manager struct {
         sendPRReview func(jobID int, taskTitle, prURL, note, diff string)
         builder      *Builder
 
-        mu         sync.Mutex
-        cancelLoop context.CancelFunc
-}
-
-type managerPlan struct {
-        Phases []managerPlanPhase `json:"phases"`
+        mu   sync.Mutex
+        busy bool
 }
 
 type managerPlanPhase struct {
@@ -54,6 +59,14 @@ type managerPlanTask struct {
         Title       string   `json:"title"`
         Description string   `json:"description"`
         Subtasks    []string `json:"subtasks"`
+}
+
+type managerDecision struct {
+        Action   string             `json:"action"`
+        Text     string             `json:"text"`
+        Question string             `json:"question"`
+        Summary  string             `json:"summary"`
+        Phases   []managerPlanPhase `json:"phases"`
 }
 
 func NewManager(database *db.DB, pool *llm.Pool, executor *tools.Executor,
@@ -69,329 +82,175 @@ func NewManager(database *db.DB, pool *llm.Pool, executor *tools.Executor,
         }
 }
 
-// Run is the manager's main loop.
-// States: StateNew → StatePlanning → StateExecuting → StateDone
-func (m *Manager) Run(ctx context.Context) {
-        loopCtx, cancel := context.WithCancel(ctx)
+// HandleUserMessage is the single entry point for all agent activity.
+// Triggered when the user sends a chat message.
+func (m *Manager) HandleUserMessage(ctx context.Context, userText string) {
+        if m.IsPaused(ctx) {
+                m.send("⏸ Agent is paused. Resume from the chat header to continue.")
+                return
+        }
+
         m.mu.Lock()
-        m.cancelLoop = cancel
+        if m.busy {
+                m.mu.Unlock()
+                m.send("⏳ Still working on your last message — give me a moment.")
+                return
+        }
+        m.busy = true
         m.mu.Unlock()
-        defer cancel()
+        defer func() {
+                m.mu.Lock()
+                m.busy = false
+                m.mu.Unlock()
+        }()
 
-        for {
-                if m.IsPaused(loopCtx) {
-                        return
-                }
-
-                state := m.GetState(loopCtx)
-                var err error
-
-                switch state {
-                case StateNew:
-                        err = m.runNew(loopCtx)
-                case StatePlanning:
-                        err = m.runPlanning(loopCtx)
-                case StateExecuting:
-                        err = m.runExecuting(loopCtx)
-                case StatePaused:
-                        select {
-                        case <-time.After(2 * time.Second):
-                        case <-loopCtx.Done():
-                                return
-                        }
-                        continue
-                case StateDone:
-                        return
-                default:
-                        m.SetState(loopCtx, StateNew)
-                        continue
-                }
-
-                if err != nil {
-                        if errors.Is(err, context.Canceled) {
-                                return
-                        }
-                        log.Printf("[manager] state=%s error: %v", state, err)
-                        m.send(fmt.Sprintf("⚠️ Manager error in %s: %v", state, err))
-                        select {
-                        case <-time.After(5 * time.Second):
-                        case <-loopCtx.Done():
-                                return
-                        }
-                }
-        }
-}
-
-// runNew: send greeting, move to StatePlanning
-func (m *Manager) runNew(ctx context.Context) error {
-        if _, err := m.db.GetProject(ctx); err != nil {
-                if _, err := m.db.CreateProject(ctx, "default"); err != nil {
-                        return err
-                }
-        }
-        m.send("👋 Hi — I am your Kaptaan Manager agent. Upload docs and I will draft an implementation plan.")
-        m.SetState(ctx, StatePlanning)
-        return nil
-}
-
-// runPlanning: load docs from DB, use LLM to generate plan,
-// present each phase to human via ask(), get yes/no approval,
-// save approved tasks to DB with status="approved", move to StateExecuting
-func (m *Manager) runPlanning(ctx context.Context) error {
-        nChunks, _ := m.db.CountDocChunks(ctx)
-        if nChunks == 0 {
-                // Notify the user once, then poll silently until docs arrive.
-                const promptedKey = "planning_prompted_for_docs"
-                if m.db.KVGetDefault(ctx, promptedKey, "0") != "1" {
-                        m.send("📄 Please upload at least one Markdown document so I can plan accurately. You can also type a message below to chat with me anytime.")
-                        _ = m.db.KVSet(ctx, promptedKey, "1")
-                }
-                for {
-                        select {
-                        case <-time.After(3 * time.Second):
-                        case <-ctx.Done():
-                                return ctx.Err()
-                        }
-                        if n, _ := m.db.CountDocChunks(ctx); n > 0 {
-                                _ = m.db.KVSet(ctx, promptedKey, "0")
-                                return nil
-                        }
-                }
-        }
-        // Reset the one-shot flag so the next planning cycle prompts again if needed.
-        _ = m.db.KVSet(ctx, "planning_prompted_for_docs", "0")
-
-        docCtx, err := BuildDocContext(ctx, m.db, "infra data core api ui", 12)
+        docCtx, err := BuildDocContext(ctx, m.db, "", 12)
         if err != nil {
-                return err
+                docCtx = "(documentation unavailable)"
         }
+        convo := m.recentConvo(ctx, 20)
         repoInfo, _ := m.exec.ScanRepo(ctx)
 
-        prompt := fmt.Sprintf(`Using ONLY the provided project docs, create a phased implementation plan.
+        msgs := []llm.Message{
+                {Role: "system", Content: managerSystemPrompt},
+                {Role: "user", Content: fmt.Sprintf(`PROJECT DOCS:
+%s
 
-DOCS:
+RECENT CONVERSATION:
 %s
 
 REPO SNAPSHOT:
 %s
 
-Return valid JSON only:
-{
-  "phases": [
-    {
-      "number": 1,
-      "title": "Phase title",
-      "tasks": [
-        {
-          "title": "Task title",
-          "description": "What and why",
-          "subtasks": ["step 1", "step 2"]
-        }
-      ]
-    }
-  ]
-}
-
-Constraints:
-- Phase order: infra → data → core logic → API → UI
-- 3-6 phases
-- each task should fit into one PR
-- keep tasks focused and testable`, docCtx, truncateStr(repoInfo, 2000))
-
-        resp, err := m.llm.ChatJSON(ctx, []llm.Message{
-                {Role: "system", Content: managerSystemPrompt},
-                {Role: "user", Content: prompt},
-        })
-        if err != nil {
-                return err
-        }
-        if len(resp.Choices) == 0 {
-                return fmt.Errorf("empty planning response")
+USER MESSAGE:
+%s`, docCtx, convo, truncateStr(repoInfo, 1500), userText)},
         }
 
-        var plan managerPlan
-        if err := json.Unmarshal([]byte(cleanJSON(resp.Choices[0].Message.Content)), &plan); err != nil {
-                return fmt.Errorf("parse plan: %w", err)
-        }
-        if len(plan.Phases) == 0 {
-                return fmt.Errorf("planning response had no phases")
-        }
+        for round := 0; round < 4; round++ {
+                resp, err := m.llm.ChatJSON(ctx, msgs)
+                if err != nil {
+                        m.send("⚠️ LLM error: " + err.Error())
+                        return
+                }
+                if len(resp.Choices) == 0 {
+                        m.send("⚠️ Empty response from LLM.")
+                        return
+                }
+                raw := resp.Choices[0].Message.Content
 
-        dbPlan, err := m.db.CreatePlan(ctx)
-        if err != nil {
-                return err
-        }
-
-        approvedCount := 0
-        for _, phase := range plan.Phases {
-                phaseIntro := fmt.Sprintf("📍 Phase %d — %s\nTasks: %d\nProceed with this phase? (yes/no)", phase.Number, phase.Title, len(phase.Tasks))
-                if !isYes(m.ask(phaseIntro)) {
-                        continue
+                var d managerDecision
+                if err := json.Unmarshal([]byte(cleanJSON(raw)), &d); err != nil {
+                        m.send(strings.TrimSpace(raw))
+                        return
                 }
 
-                for _, task := range phase.Tasks {
-                        var sb strings.Builder
-                        sb.WriteString(fmt.Sprintf("Task: %s\n\n", task.Title))
-                        sb.WriteString(task.Description)
-                        sb.WriteString("\n\nSubtasks:\n")
-                        for i, st := range task.Subtasks {
-                                sb.WriteString(fmt.Sprintf("%d) %s\n", i+1, st))
+                switch strings.ToLower(d.Action) {
+                case "reply":
+                        if d.Text != "" {
+                                m.send(d.Text)
                         }
-                        sb.WriteString("\nApprove this task? (yes/no)")
-
-                        if !isYes(m.ask(sb.String())) {
-                                continue
+                        return
+                case "ask":
+                        if strings.TrimSpace(d.Question) == "" {
+                                return
                         }
+                        answer := m.ask(d.Question)
+                        if strings.TrimSpace(answer) == "" {
+                                return
+                        }
+                        msgs = append(msgs,
+                                llm.Message{Role: "assistant", Content: raw},
+                                llm.Message{Role: "user", Content: "ANSWER: " + answer},
+                        )
+                case "plan":
+                        m.persistPlanAndQueue(ctx, d.Summary, d.Phases)
+                        return
+                default:
+                        if d.Text != "" {
+                                m.send(d.Text)
+                        } else {
+                                m.send(strings.TrimSpace(raw))
+                        }
+                        return
+                }
+        }
+        m.send("🤔 Stopped after 4 clarification rounds — please rephrase your request with more detail.")
+}
 
-                        dbTask, err := m.db.CreateTask(ctx, dbPlan.ID, nil, phase.Number, task.Title, task.Description, false)
+func (m *Manager) persistPlanAndQueue(ctx context.Context, summary string, phases []managerPlanPhase) {
+        if len(phases) == 0 {
+                m.send("⚠️ Plan was empty — nothing queued.")
+                return
+        }
+
+        plan, err := m.db.CreatePlan(ctx)
+        if err != nil {
+                m.send("⚠️ Could not save plan: " + err.Error())
+                return
+        }
+
+        var sb strings.Builder
+        if strings.TrimSpace(summary) != "" {
+                sb.WriteString("📋 **Plan:** ")
+                sb.WriteString(summary)
+                sb.WriteString("\n\n")
+        } else {
+                sb.WriteString("📋 **Plan ready**\n\n")
+        }
+
+        queued := 0
+        for _, phase := range phases {
+                sb.WriteString(fmt.Sprintf("**Phase %d — %s**\n", phase.Number, phase.Title))
+                for _, t := range phase.Tasks {
+                        dbTask, err := m.db.CreateTask(ctx, plan.ID, nil, phase.Number, t.Title, t.Description, false)
                         if err != nil {
-                                return err
-                        }
-                        if err := m.db.UpdateTaskStatus(ctx, dbTask.ID, "approved"); err != nil {
-                                return err
-                        }
-                        for _, st := range task.Subtasks {
-                                sub, err := m.db.CreateTask(ctx, dbPlan.ID, &dbTask.ID, phase.Number, st, "", false)
-                                if err != nil {
-                                        return err
-                                }
-                                _ = m.db.UpdateTaskStatus(ctx, sub.ID, "pending")
-                        }
-                        approvedCount++
-                }
-        }
-
-        if approvedCount == 0 {
-                m.send("⚠️ No tasks were approved. I will stay in planning until you approve at least one task.")
-                return nil
-        }
-
-        m.send(fmt.Sprintf("✅ Plan saved. %d task(s) approved and queued for execution.", approvedCount))
-        m.SetState(ctx, StateExecuting)
-        return nil
-}
-
-// runExecuting: queue approved tasks for builder, then review completed PRs.
-func (m *Manager) runExecuting(ctx context.Context) error {
-        plan, err := m.db.GetActivePlan(ctx)
-        if err != nil {
-                m.send("✅ No active plan found. Marking workflow done.")
-                m.SetState(ctx, StateDone)
-                return nil
-        }
-
-        tasks, err := m.db.GetTasksByPlan(ctx, plan.ID)
-        if err != nil {
-                return err
-        }
-
-        var next *db.Task
-        for i := range tasks {
-                t := tasks[i]
-                if t.ParentID != nil || t.Status != "approved" {
-                        continue
-                }
-                job, err := m.db.GetJobForTask(ctx, t.ID)
-                if err == nil && job != nil {
-                        if job.Status == "queued" || job.Status == "running" {
                                 continue
                         }
-                        if job.Status == "done" {
-                                return m.reviewAndPresent(ctx, job)
+                        _ = m.db.UpdateTaskStatus(ctx, dbTask.ID, "approved")
+                        for _, st := range t.Subtasks {
+                                if sub, err := m.db.CreateTask(ctx, plan.ID, &dbTask.ID, phase.Number, st, "", false); err == nil && sub != nil {
+                                        _ = m.db.UpdateTaskStatus(ctx, sub.ID, "pending")
+                                }
                         }
+                        branch := fmt.Sprintf("feature/task-%d-%s", dbTask.ID, slugify(t.Title))
+                        if _, err := m.db.CreateBuilderJob(ctx, dbTask.ID, branch); err == nil {
+                                queued++
+                        }
+                        sb.WriteString("  • ")
+                        sb.WriteString(t.Title)
+                        sb.WriteString("\n")
                 }
-                taskCopy := t
-                next = &taskCopy
-                break
         }
 
-        if next == nil {
-                m.send("🏁 All approved tasks are complete.")
-                _ = m.db.ExhaustPlan(ctx, plan.ID)
-                m.SetState(ctx, StateDone)
-                return nil
-        }
-
-        branch := fmt.Sprintf("feature/task-%d-%s", next.ID, slugify(next.Title))
-        job, err := m.db.CreateBuilderJob(ctx, next.ID, branch)
-        if err != nil {
-                return err
-        }
-        _ = m.db.UpdateTaskStatus(ctx, next.ID, "in_progress")
-        _ = m.db.LogEvent(ctx, next.ID, "builder_job_queued", fmt.Sprintf("job_id=%d branch=%s", job.ID, branch))
-        m.send(fmt.Sprintf("🧱 Builder queued for task: %s", next.Title))
+        sb.WriteString(fmt.Sprintf("\n%d task(s) queued for the builder.", queued))
+        m.send(sb.String())
 
         if m.builder != nil {
                 m.builder.Notify()
         }
-
-        for {
-                select {
-                case <-ctx.Done():
-                        return ctx.Err()
-                case <-time.After(15 * time.Second):
-                        latest, err := m.db.GetBuilderJob(ctx, job.ID)
-                        if err != nil {
-                                continue
-                        }
-                        if latest.Status == "done" {
-                                return m.reviewAndPresent(ctx, latest)
-                        }
-                        if latest.Status == "failed" {
-                                m.send(fmt.Sprintf("❌ Builder failed on task: %s", next.Title))
-                                _ = m.db.UpdateTaskStatus(ctx, next.ID, "failed")
-                                _ = m.db.LogEvent(ctx, next.ID, "builder_failed", truncateStr(latest.BuildOutput+"\n"+latest.TestOutput, 400))
-                                return nil
-                        }
-                }
-        }
 }
 
-func (m *Manager) generateReviewNote(ctx context.Context, task *db.Task, job *db.BuilderJob) (string, error) {
-        reviewPrompt := fmt.Sprintf(`Review this builder submission briefly.
-Task: %s
-Description: %s
-
-Diff summary:
-%s
-
-Build output:
-%s
-
-Test output:
-%s
-
-Respond with 3-5 short lines covering quality, risks, and readiness.`,
-                task.Title,
-                task.Description,
-                truncateStr(job.DiffSummary, 2500),
-                truncateStr(job.BuildOutput, 1200),
-                truncateStr(job.TestOutput, 1200),
-        )
-
-        resp, err := m.llm.Chat(ctx, []llm.Message{
-                {Role: "system", Content: managerSystemPrompt},
-                {Role: "user", Content: reviewPrompt},
-        }, nil)
-        if err != nil {
-                return "", err
+func (m *Manager) recentConvo(ctx context.Context, limit int) string {
+        msgs, err := m.db.GetRecentMessages(ctx, limit)
+        if err != nil || len(msgs) == 0 {
+                return "(no prior messages)"
         }
-        if len(resp.Choices) == 0 {
-                return "", fmt.Errorf("empty review response")
+        var sb strings.Builder
+        for _, msg := range msgs {
+                sb.WriteString(msg.Role)
+                sb.WriteString(": ")
+                sb.WriteString(truncateStr(msg.Content, 400))
+                sb.WriteString("\n")
         }
-
-        note := strings.TrimSpace(resp.Choices[0].Message.Content)
-        if note == "" {
-                return "", fmt.Errorf("empty review note")
-        }
-        return note, nil
+        return sb.String()
 }
 
-// reviewAndPresent: manager LLM reviews diff+test output, asks human for merge approval.
-func (m *Manager) reviewAndPresent(ctx context.Context, job *db.BuilderJob) error {
+// ReviewBuilderJob is invoked by the builder after a job completes. It asks
+// the LLM to produce a review note and presents the PR for human approval.
+func (m *Manager) ReviewBuilderJob(ctx context.Context, job *db.BuilderJob) {
         task, err := m.db.GetTask(ctx, job.TaskID)
         if err != nil {
-                return err
+                return
         }
 
         note, err := m.generateReviewNote(ctx, task, job)
@@ -408,74 +267,103 @@ func (m *Manager) reviewAndPresent(ctx context.Context, job *db.BuilderJob) erro
 
         answer := m.ask(fmt.Sprintf(
                 "PR ready: %s\n\nManager note: %s\n\nApprove merge? (yes / no)",
-                job.PRURL,
-                note,
+                job.PRURL, note,
         ))
+
+        // Empty answer = ask timed out without a human reply. Leave the job in
+        // its current "awaiting review" state instead of auto-rejecting it so
+        // the user can come back later and decide.
+        if strings.TrimSpace(answer) == "" {
+                m.send(fmt.Sprintf("⌛ No decision on %s — left awaiting review. Send me 'merge %d' or 'reject %d' when ready.",
+                        job.PRURL, job.ID, job.ID))
+                return
+        }
 
         if isYes(answer) {
                 result := m.exec.GithubOp(ctx, "merge_pr", fmt.Sprintf("%d", job.PRNumber))
                 if result.IsErr {
                         m.send(fmt.Sprintf("❌ Merge failed: %s", result.Output))
-                        return fmt.Errorf("merge failed: %s", result.Output)
+                        return
                 }
                 _ = m.db.UpdateTaskStatus(ctx, job.TaskID, "done")
                 _ = m.db.LogEvent(ctx, job.TaskID, "merged", job.PRURL)
                 m.send(fmt.Sprintf("✅ Merged: %s", job.PRURL))
-                return nil
+                return
         }
 
         _ = m.db.UpdateBuilderJobStatus(ctx, job.ID, "rejected")
         _ = m.db.UpdateTaskStatus(ctx, job.TaskID, "rejected")
-        m.send("❌ PR rejected by founder. Task marked for retry.")
-        return nil
+        m.send("❌ PR rejected. Send me a message describing what to change.")
 }
 
-// GetState / SetState: read/write agent_state KV key.
-func (m *Manager) GetState(ctx context.Context) State {
-        s := m.db.KVGetDefault(ctx, "agent_state", string(StateNew))
-        return State(s)
-}
+func (m *Manager) generateReviewNote(ctx context.Context, task *db.Task, job *db.BuilderJob) (string, error) {
+        prompt := fmt.Sprintf(`Review this builder submission briefly.
+Task: %s
+Description: %s
 
-func (m *Manager) SetState(ctx context.Context, s State) {
-        _ = m.db.KVSet(ctx, "agent_state", string(s))
-        _ = m.db.UpdateProjectStatus(ctx, string(s))
-        log.Printf("[manager] state -> %s", s)
-}
+Diff summary:
+%s
 
-// GetStatus returns state string and 0 trust (trust system removed).
-func (m *Manager) GetStatus(ctx context.Context) (string, float64) {
-        return string(m.GetState(ctx)), 0
-}
+Build output:
+%s
 
-// Pause / Resume.
-func (m *Manager) Pause(ctx context.Context) {
-        current := m.GetState(ctx)
-        _ = m.db.KVSet(ctx, "agent_paused", "1")
-        _ = m.db.KVSet(ctx, "paused_from_state", string(current))
-        m.SetState(ctx, StatePaused)
+Test output:
+%s
 
-        m.mu.Lock()
-        cancel := m.cancelLoop
-        m.mu.Unlock()
-        if cancel != nil {
-                cancel()
+Respond with 3-5 short lines covering quality, risks, and readiness.`,
+                task.Title, task.Description,
+                truncateStr(job.DiffSummary, 2500),
+                truncateStr(job.BuildOutput, 1200),
+                truncateStr(job.TestOutput, 1200),
+        )
+
+        resp, err := m.llm.Chat(ctx, []llm.Message{
+                {Role: "system", Content: managerSystemPrompt},
+                {Role: "user", Content: prompt},
+        }, nil)
+        if err != nil {
+                return "", err
         }
+        if len(resp.Choices) == 0 {
+                return "", fmt.Errorf("empty review")
+        }
+        note := strings.TrimSpace(resp.Choices[0].Message.Content)
+        if note == "" {
+                return "", fmt.Errorf("empty review")
+        }
+        return note, nil
+}
 
-        m.send("⏸ Paused. Send /resume to continue.")
+// ── Pause / Resume ──────────────────────────────────────────────────────────
+
+func (m *Manager) IsPaused(ctx context.Context) bool {
+        return m.db.KVGetDefault(ctx, "agent_paused", "0") == "1"
+}
+
+func (m *Manager) Pause(ctx context.Context) {
+        _ = m.db.KVSet(ctx, "agent_paused", "1")
+        _ = m.db.UpdateProjectStatus(ctx, "paused")
+        m.send("⏸ Agent paused.")
+        log.Printf("[manager] paused")
 }
 
 func (m *Manager) Resume(ctx context.Context) {
         _ = m.db.KVSet(ctx, "agent_paused", "0")
-        prev := State(m.db.KVGetDefault(ctx, "paused_from_state", string(StatePlanning)))
-        if prev == "" || prev == StatePaused {
-                prev = StatePlanning
-        }
-        m.SetState(ctx, prev)
-        m.send("▶️ Resuming...")
-        go m.Run(context.Background())
+        _ = m.db.UpdateProjectStatus(ctx, "ready")
+        m.send("▶️ Agent resumed.")
+        log.Printf("[manager] resumed")
 }
 
-// IsPaused reads agent_paused KV key.
-func (m *Manager) IsPaused(ctx context.Context) bool {
-        return m.db.KVGetDefault(ctx, "agent_paused", "0") == "1"
+// GetStatus returns a coarse status string for the UI header.
+func (m *Manager) GetStatus(ctx context.Context) (string, float64) {
+        if m.IsPaused(ctx) {
+                return "paused", 0
+        }
+        m.mu.Lock()
+        busy := m.busy
+        m.mu.Unlock()
+        if busy {
+                return "thinking", 0
+        }
+        return "ready", 0
 }

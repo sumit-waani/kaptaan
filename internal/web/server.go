@@ -16,11 +16,11 @@ import (
 
 // Agent is the interface the web server needs — avoids circular imports.
 type Agent interface {
-        Run(ctx context.Context)
+        RunBuilderLoop(ctx context.Context)
+        HandleUserMessage(ctx context.Context, text string)
         Pause(ctx context.Context)
         Resume(ctx context.Context)
         IngestDoc(ctx context.Context, filename, content string) (int, error)
-        ScanRepo(ctx context.Context) (string, error)
         GetStatus(ctx context.Context) (string, float64)
 }
 
@@ -197,18 +197,15 @@ func (s *Server) Start(ctx context.Context) {
         // Protected — valid session cookie required
         mux.HandleFunc("/events", s.requireAuth(s.handleSSE))
         mux.HandleFunc("/api/status", s.requireAuth(s.handleStatus))
-        mux.HandleFunc("/api/score", s.requireAuth(s.handleScore))
-        mux.HandleFunc("/api/tasks", s.requireAuth(s.handleTasks))
         mux.HandleFunc("/api/log", s.requireAuth(s.handleLog))
         mux.HandleFunc("/api/usage", s.requireAuth(s.handleUsage))
         mux.HandleFunc("/api/clear", s.requireAuth(s.handleClear))
-        mux.HandleFunc("/api/scan", s.requireAuth(s.handleScan))
         mux.HandleFunc("/api/pause", s.requireAuth(s.handlePause))
         mux.HandleFunc("/api/resume", s.requireAuth(s.handleResume))
-        mux.HandleFunc("/api/replan", s.requireAuth(s.handleReplan))
         mux.HandleFunc("/api/reply", s.requireAuth(s.handleReply))
         mux.HandleFunc("/api/chat", s.requireAuth(s.handleChat))
         mux.HandleFunc("/api/upload", s.requireAuth(s.handleUpload))
+        mux.HandleFunc("/api/docs", s.requireAuth(s.handleDocs))
 
         srv := &http.Server{
                 Addr:    "0.0.0.0:5000",
@@ -388,65 +385,6 @@ func (s *Server) buildStatusJSON(ctx context.Context) (string, error) {
         return string(out), err
 }
 
-func (s *Server) handleScore(w http.ResponseWriter, r *http.Request) {
-        ctx := r.Context()
-        total, answered, _ := s.db.CountClarifications(ctx)
-        clarScore := 0.5
-        if total > 0 {
-                clarScore = float64(answered) / float64(total)
-        }
-        repoScore := 0.0
-        if s.db.KVGetDefault(ctx, "repo_scanned", "0") == "1" {
-                repoScore = 1.0
-        }
-        chunks, _ := s.db.CountDocChunks(ctx)
-        docScore := float64(chunks) / 20.0
-        if docScore > 1 {
-                docScore = 1
-        }
-        open := total - answered
-        ambig := 1.0 - float64(open)*0.2
-        if ambig < 0 {
-                ambig = 0
-        }
-        score := (docScore*0.30 + clarScore*0.25 + repoScore*0.15 + ambig*0.10) * 100
-
-        jsonOK(w, map[string]interface{}{
-                "total":          score,
-                "doc_coverage":   docScore * 100,
-                "clarifications": clarScore * 100,
-                "repo_scan":      repoScore * 100,
-                "ambiguity":      ambig * 100,
-                "chunks":         chunks,
-        })
-}
-
-func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
-        ctx := r.Context()
-        plan, err := s.db.GetActivePlan(ctx)
-        if err != nil {
-                jsonOK(w, map[string]interface{}{"plan": nil, "tasks": []interface{}{}})
-                return
-        }
-        tasks, _ := s.db.GetTasksByPlan(ctx, plan.ID)
-        type item struct {
-                Phase  int    `json:"phase"`
-                Title  string `json:"title"`
-                Status string `json:"status"`
-        }
-        var items []item
-        for _, t := range tasks {
-                if t.ParentID != nil {
-                        continue
-                }
-                items = append(items, item{t.Phase, t.Title, t.Status})
-        }
-        if items == nil {
-                items = []item{}
-        }
-        jsonOK(w, map[string]interface{}{"version": plan.Version, "tasks": items})
-}
-
 func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
         logs, _ := s.db.GetGlobalRecentLogs(r.Context(), 10)
         type item struct {
@@ -482,27 +420,6 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
         jsonOK(w, map[string]string{"ok": "cleared"})
 }
 
-func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
-        if r.Method != http.MethodPost {
-                http.Error(w, "POST required", http.StatusMethodNotAllowed)
-                return
-        }
-        if s.agent == nil {
-                jsonErr(w, "agent not configured — add LLM API keys and restart", http.StatusServiceUnavailable)
-                return
-        }
-        s.Send("🔍 Scanning repo...")
-        go func() {
-                out, err := s.agent.ScanRepo(context.Background())
-                if err != nil {
-                        s.Send(fmt.Sprintf("❌ Scan failed: %v", err))
-                        return
-                }
-                s.Send("```\n" + trunc(out, 2000) + "\n```")
-        }()
-        jsonOK(w, map[string]string{"ok": "scanning"})
-}
-
 func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
                 http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -529,20 +446,6 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
         s.agent.Resume(r.Context())
         s.broadcastStatus(r.Context())
         jsonOK(w, map[string]string{"ok": "resuming"})
-}
-
-func (s *Server) handleReplan(w http.ResponseWriter, r *http.Request) {
-        if r.Method != http.MethodPost {
-                http.Error(w, "POST required", http.StatusMethodNotAllowed)
-                return
-        }
-        if s.agent == nil {
-                jsonErr(w, "agent not configured", http.StatusServiceUnavailable)
-                return
-        }
-        s.Send("🔄 Replan triggered — resuming from replanning state...")
-        go s.agent.Run(context.Background())
-        jsonOK(w, map[string]string{"ok": "replanning"})
 }
 
 func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
@@ -627,7 +530,32 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
         _ = s.db.AddMessage(r.Context(), "reply", "You: "+payload.Text)
         s.hub.broadcast(s.sseMsg("reply", "You: "+payload.Text))
-        jsonOK(w, map[string]string{"ok": "stored"})
+
+        // No active question — this is a fresh request to the planner. Run it
+        // in a background goroutine so the HTTP handler returns immediately.
+        if s.agent != nil {
+                text := payload.Text
+                go s.agent.HandleUserMessage(context.Background(), text)
+        }
+        jsonOK(w, map[string]string{"ok": "queued"})
+}
+
+func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
+        docs, err := s.db.ListDocs(r.Context())
+        if err != nil {
+                jsonErr(w, err.Error(), http.StatusInternalServerError)
+                return
+        }
+        type item struct {
+                ID       int    `json:"id"`
+                Filename string `json:"filename"`
+                Uploaded string `json:"uploaded"`
+        }
+        out := []item{}
+        for _, d := range docs {
+                out = append(out, item{d.ID, d.Filename, d.CreatedAt.Format("2006-01-02 15:04")})
+        }
+        jsonOK(w, map[string]interface{}{"docs": out})
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
