@@ -1,4 +1,4 @@
-modules = ["go-1.21", "bash", "python-3.11", "postgresql-16"]
+modules = ["go-1.21", "bash", "python-3.11"]
 [agent]
 expertMode = true
 stack = "BEST_EFFORT_FALLBACK"
@@ -22,13 +22,13 @@ args = "Start application"
 name = "Start application"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "./kaptaan"
-waitForPort = 5000
-
 [workflows.workflow.metadata]
 outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "GONOSUMDB='*' go build -o kaptaan ./cmd/kaptaan && ./kaptaan"
+waitForPort = 5000
 
 [[ports]]
 localPort = 5000
