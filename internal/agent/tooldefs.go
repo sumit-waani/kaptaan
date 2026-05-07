@@ -53,6 +53,11 @@ var allTools = []llm.Tool{
                         "content":  sprop("new full markdown body"),
                 }, "filename", "content")),
 
+        mkTool("list_docs", "List reference docs uploaded by the user for this project (filename + id).",
+                obj(map[string]interface{}{})),
+        mkTool("read_doc", "Read the full content of a reference doc by its id (shown in list_docs).",
+                obj(map[string]interface{}{"id": iprop("doc id from list_docs")}, "id")),
+
         mkTool("list_memories", "List long-lived memories saved for the active project.",
                 obj(map[string]interface{}{})),
         mkTool("read_memory", "Fetch one memory by key.",
