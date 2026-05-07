@@ -18,19 +18,30 @@ import (
 )
 
 const builderSystemPrompt = `You are the Builder agent for Kaptaan — an autonomous software engineer.
-Your job: implement the assigned task by writing Go code, running builds and tests, and opening a GitHub PR.
 
-RULES:
-1. Start with search_docs to load relevant documentation.
-2. Check repo status with github_op(status).
-3. Create a feature branch: feature/task-{id}-{slug}.
-4. After every .go file written: run go build ./... — fix errors before continuing. Max 3 retries.
-5. After all code: run go test ./... -cover. Target 85%+ coverage.
-6. Commit all changes, open a PR with a clear title and description.
-7. Base64-encode all file content when using write_file.
-8. Update task status via update_task_status when starting and finishing.
-9. Log significant events via log_event.
-10. Never ask the human questions — use ask_founder only if truly blocked on a requirement ambiguity.`
+CONTEXT YOU HAVE:
+- The Manager's task spec (title, description, ordered subtasks with descriptions) — this IS your spec.
+- The existing codebase, accessible via shell + read_file in your sandbox at /home/user/repo.
+
+CONTEXT YOU DO NOT HAVE:
+- The PRD, design docs, or any project documentation. The Manager owns those and has already distilled what you need into the task spec.
+- Prior conversation with the user.
+If anything is missing from the spec, treat the existing codebase as the source of truth — never invent requirements.
+
+WORKFLOW (follow strictly):
+1. INSPECT FIRST. Before writing a single line:
+   • shell: 'ls -la' and 'find . -maxdepth 3 -type f -not -path "./.git/*" | head -200' to see what exists.
+   • shell: 'cat go.mod' (or equivalent) to learn the module name + deps.
+   • read_file every existing file that is relevant to your task — do NOT assume; verify.
+   • github_op(status) to confirm branch state.
+2. PLAN MENTALLY against what you found. If the spec says "add handler X" and the file already has handler X, adapt — don't overwrite blindly.
+3. EXECUTE the subtasks in order. After every code file written, run go build ./... — fix errors before continuing (max 3 build retries).
+4. After all code: run go test ./... -cover. If there are no Go test files yet (scaffolding task), that's fine.
+5. Commit all changes, open a PR with a clear title + description summarising what changed.
+6. Base64-encode file content when using write_file.
+7. Update task status via update_task_status when starting (in_progress) and finishing (done).
+8. Log significant events via log_event.
+9. NEVER ask the human questions. Use ask_founder ONLY if a true requirement ambiguity blocks you — and try to resolve it from the codebase first.`
 
 const (
         maxBuildRetries      = 3
@@ -416,42 +427,57 @@ func (b *Builder) runBuildLoop(ctx context.Context, exec *tools.Executor, job *d
         }
 
         b.statusForTask(ctx, task.ID, task.Title, "started", fmt.Sprintf("Branch: %s", branch))
-        b.statusForTask(ctx, task.ID, task.Title, "coding", "Writing files")
+        b.statusForTask(ctx, task.ID, task.Title, "coding", "Inspecting repo")
 
-        docCtx, _ := BuildDocContext(ctx, b.db, task.Title+" "+task.Description, 8)
         subtasks, _ := b.db.GetSubtasks(ctx, task.ID)
         var subtaskList strings.Builder
+        if len(subtasks) == 0 {
+                subtaskList.WriteString("(no subtasks — execute the task description directly)\n")
+        }
         for i, st := range subtasks {
-                subtaskList.WriteString(fmt.Sprintf("%d. %s\n", i+1, st.Title))
+                desc := strings.TrimSpace(st.Description)
+                if desc == "" {
+                        desc = "(no further detail — infer from task description + codebase)"
+                }
+                subtaskList.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, st.Title, desc))
         }
 
         userPrompt := fmt.Sprintf(`TASK ID: %d
 TASK TITLE: %s
-TASK DESCRIPTION: %s
 BRANCH: %s
 WORKSPACE: %s
 
-SUBTASKS:
+TASK SPEC (from the Manager — this is your source of truth, you have NO docs):
 %s
 
-Execute the task now end-to-end and open a PR.
+ORDERED SUBTASKS (work through them in order):
+%s
 
-Relevant docs:
-%s`,
+REMINDER: Before writing any code, inspect the existing repo (ls, find, read_file every relevant file, github_op status). The codebase is the ground truth for what already exists. Then execute the subtasks end-to-end and open a PR.`,
                 task.ID,
                 task.Title,
-                task.Description,
                 branch,
                 sandboxRepoDir,
+                strings.TrimSpace(task.Description),
                 subtaskList.String(),
-                docCtx,
         )
 
         messages := []llm.Message{
                 {Role: "system", Content: builderSystemPrompt},
                 {Role: "user", Content: userPrompt},
         }
-        toolDefs := tools.Definitions()
+        // Builder gets every tool EXCEPT search_docs — by design the Builder
+        // does not see project documentation; the Manager has already distilled
+        // what it needs into the task spec. Filter rather than expose a tool
+        // the model would happily call against an empty/irrelevant corpus.
+        allTools := tools.Definitions()
+        toolDefs := make([]llm.Tool, 0, len(allTools))
+        for _, t := range allTools {
+                if t.Function.Name == "search_docs" {
+                        continue
+                }
+                toolDefs = append(toolDefs, t)
+        }
         runtime := &buildRuntime{}
         // Hydrate PR state from a previous attempt — when a job is requeued after
         // successfully opening a PR (e.g. a downstream test step failed), we must

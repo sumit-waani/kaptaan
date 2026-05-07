@@ -35,10 +35,13 @@ type DocChunk struct {
 }
 
 type Plan struct {
-        ID        int
-        Version   int
-        Status    string
-        CreatedAt time.Time
+        ID           int
+        Version      int
+        Status       string
+        Outline      string // JSON array of {number,title} for all phases
+        CurrentPhase int    // phase number currently detailed into tasks
+        GoalSummary  string // short manager-authored goal recap
+        CreatedAt    time.Time
 }
 
 type Task struct {
@@ -284,24 +287,57 @@ func (d *DB) CreatePlan(ctx context.Context) (*Plan, error) {
 
         row := d.pool.QueryRow(ctx,
                 `INSERT INTO plans(project_id, version) VALUES($1,$2)
-                 RETURNING id, version, status, created_at`,
+                 RETURNING id, version, status, outline, current_phase, goal_summary, created_at`,
                 pid, maxVersion+1)
         p := &Plan{}
-        err := row.Scan(&p.ID, &p.Version, &p.Status, &p.CreatedAt)
+        err := row.Scan(&p.ID, &p.Version, &p.Status, &p.Outline, &p.CurrentPhase, &p.GoalSummary, &p.CreatedAt)
         return p, err
 }
 
 func (d *DB) GetActivePlan(ctx context.Context) (*Plan, error) {
         row := d.pool.QueryRow(ctx,
-                `SELECT id, version, status, created_at FROM plans
+                `SELECT id, version, status, outline, current_phase, goal_summary, created_at FROM plans
                  WHERE status='active' AND project_id=$1 ORDER BY id DESC LIMIT 1`,
                 d.ActiveProjectID(ctx))
         p := &Plan{}
-        err := row.Scan(&p.ID, &p.Version, &p.Status, &p.CreatedAt)
+        err := row.Scan(&p.ID, &p.Version, &p.Status, &p.Outline, &p.CurrentPhase, &p.GoalSummary, &p.CreatedAt)
         if err != nil {
                 return nil, err
         }
         return p, nil
+}
+
+// SetPlanOutline persists the manager-authored phase outline + goal summary
+// on a freshly-created plan.
+func (d *DB) SetPlanOutline(ctx context.Context, planID int, outlineJSON, goalSummary string) error {
+        _, err := d.pool.Exec(ctx,
+                `UPDATE plans SET outline=$1, goal_summary=$2 WHERE id=$3`,
+                outlineJSON, goalSummary, planID)
+        return err
+}
+
+// SetPlanCurrentPhase records which phase the Manager has currently expanded
+// into concrete tasks. Bumped after every phase completes + the next phase
+// is detailed.
+func (d *DB) SetPlanCurrentPhase(ctx context.Context, planID, phase int) error {
+        _, err := d.pool.Exec(ctx,
+                `UPDATE plans SET current_phase=$1 WHERE id=$2`, phase, planID)
+        return err
+}
+
+// GetTopLevelTasksByPhase returns parent (top-level) tasks for a given plan
+// + phase ordered by id. Used to check if a phase has any tasks left to queue
+// after a merge.
+func (d *DB) GetTopLevelTasksByPhase(ctx context.Context, planID, phase int) ([]Task, error) {
+        rows, err := d.pool.Query(ctx,
+                `SELECT id,plan_id,parent_id,phase,title,description,status,is_suggestion,pr_url,created_at,updated_at
+                 FROM tasks WHERE plan_id=$1 AND phase=$2 AND parent_id IS NULL
+                 ORDER BY id`, planID, phase)
+        if err != nil {
+                return nil, err
+        }
+        defer rows.Close()
+        return scanTasks(rows)
 }
 
 func (d *DB) ExhaustPlan(ctx context.Context, planID int) error {

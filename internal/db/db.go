@@ -233,6 +233,14 @@ func (d *DB) migrate(ctx context.Context) error {
         _, _ = d.pool.Exec(ctx, `ALTER TABLE project ADD COLUMN IF NOT EXISTS repo_url     TEXT NOT NULL DEFAULT ''`)
         _, _ = d.pool.Exec(ctx, `ALTER TABLE project ADD COLUMN IF NOT EXISTS github_token TEXT NOT NULL DEFAULT ''`)
 
+        // Phase-at-a-time planning: outline holds the high-level phase list
+        // (JSON array of {number,title}) and current_phase is the phase the
+        // Manager has currently detailed into tasks. On merge of the last task
+        // of current_phase the Manager is re-invoked to detail the next phase.
+        _, _ = d.pool.Exec(ctx, `ALTER TABLE plans ADD COLUMN IF NOT EXISTS outline       TEXT    NOT NULL DEFAULT ''`)
+        _, _ = d.pool.Exec(ctx, `ALTER TABLE plans ADD COLUMN IF NOT EXISTS current_phase INTEGER NOT NULL DEFAULT 1`)
+        _, _ = d.pool.Exec(ctx, `ALTER TABLE plans ADD COLUMN IF NOT EXISTS goal_summary  TEXT    NOT NULL DEFAULT ''`)
+
         // Seed a default project ONLY when the table is completely empty (i.e.
         // a brand-new install). Previously we re-inserted id=1 on every boot,
         // which caused the "default project keeps coming back after delete"

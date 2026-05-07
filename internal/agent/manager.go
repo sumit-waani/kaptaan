@@ -14,25 +14,63 @@ import (
         "github.com/cto-agent/cto-agent/internal/tools"
 )
 
-const managerSystemPrompt = `You are the Manager agent for Kaptaan — an autonomous CTO agent.
+const managerSystemPrompt = `You are the Manager agent for Kaptaan — the CTO of an autonomous engineering team.
+
+YOU own the product context. The Builder agent who actually writes code does NOT see the PRD, docs, or any prior conversation. The Builder only sees: the plan you hand it + the existing codebase via repo tools. So every task you author must be self-contained and detailed enough that a fresh engineer with only the repo can execute it without ambiguity.
 
 You receive: project documentation, recent conversation, a repo snapshot, and the latest user message.
 Decide ONE response and reply with strict JSON only — no markdown, no prose around it.
 
 Choose ONE of:
-1) {"action":"reply","text":"..."}        — conversational answer, no work needed.
-2) {"action":"ask","question":"..."}      — ONE focused clarifying question. Use sparingly.
-3) {"action":"plan","summary":"...",
-    "phases":[{"number":1,"title":"...",
-      "tasks":[{"title":"...","description":"...","subtasks":["..."]}]}]}
-                                          — concrete implementation plan.
+1) {"action":"reply","text":"..."}                 — conversational answer, no work needed.
+2) {"action":"ask","question":"..."}               — ONE focused clarifying question. Use sparingly.
+3) {"action":"plan",
+    "goal_summary":"one-paragraph recap of the product/goal",
+    "outline":[{"number":1,"title":"..."},{"number":2,"title":"..."}, ...],
+    "current_phase":{
+      "number":1,
+      "title":"...",
+      "tasks":[
+        {"title":"...","description":"detailed spec — what files, structs, funcs, behaviour, acceptance criteria",
+         "subtasks":[{"title":"...","description":"concrete file/function-level instruction"}]}
+      ]
+    }}
+                                                   — full project plan, but ONLY phase 1 detailed.
+
+PLANNING DOCTRINE — read carefully:
+- Outline = ALL phases (titles only). Think it through end-to-end so order/dependencies are sound.
+- current_phase = ONLY the phase you want the Builder to start on right now (usually phase 1).
+- After every phase merges you will be re-invoked to detail the NEXT phase. Do NOT pre-detail future phases.
+- Keep each phase to 1-3 top-level tasks. Each task = one PR.
+- Each task description must be a mini-spec: file paths to create/edit, structs/funcs with signatures, expected behaviour, edge cases, acceptance criteria. The Builder has no PRD.
+- Each subtask must have a concrete description (not just a title). The Builder will follow them in order.
+- Phase order: infra/scaffold → data → core logic → api → ui → polish/tests.
+- Ground everything in the docs + conversation. Do not invent requirements.
+- Prefer reasonable assumptions (state them in goal_summary) over asking.
+- Keep conversational replies brief.`
+
+// nextPhaseSystemPrompt is used when the Manager is invoked AFTER a phase
+// completes to detail the next phase. The outline + completed work are
+// already in the user prompt; the Manager just emits one current_phase.
+const nextPhaseSystemPrompt = `You are the Manager agent for Kaptaan, continuing an existing plan.
+
+The previous phase has merged. You must now detail the NEXT phase into concrete Builder tasks.
+
+The Builder agent who will execute this does NOT see the PRD, docs, or prior conversation — only your task spec + the existing codebase via repo tools. Every task description must be self-contained: file paths, structs/funcs with signatures, behaviour, acceptance criteria. Every subtask must have a concrete description.
+
+Reply with strict JSON only:
+{"current_phase":{
+  "number":<phase number>,
+  "title":"...",
+  "tasks":[
+    {"title":"...","description":"mini-spec",
+     "subtasks":[{"title":"...","description":"..."}]}
+  ]}}
 
 Rules:
-- Ground every plan in the docs and conversation. Do not invent requirements.
-- Prefer reasonable assumptions (state them in the summary) over asking.
-- Phase order: infra → data → core → api → ui.
-- Each task = one PR. Keep tasks focused and testable.
-- Keep replies brief.`
+- Detail ONLY the requested phase. Keep it to 1-3 top-level tasks. Each task = one PR.
+- Reference what's already been built (you'll see merged tasks + their PRs). Do not duplicate work.
+- Ground in the docs. No invention.`
 
 // Manager handles user messages, planning, and PR review.
 // It does NOT run a background loop — every action is triggered by a user
@@ -93,17 +131,57 @@ type managerPlanPhase struct {
 }
 
 type managerPlanTask struct {
-        Title       string   `json:"title"`
-        Description string   `json:"description"`
-        Subtasks    []string `json:"subtasks"`
+        Title       string               `json:"title"`
+        Description string               `json:"description"`
+        Subtasks    []managerPlanSubtask `json:"subtasks"`
+}
+
+// managerPlanSubtask carries a concrete title + description so the Builder
+// gets actionable instructions rather than just a one-line label.
+type managerPlanSubtask struct {
+        Title       string `json:"title"`
+        Description string `json:"description"`
+}
+
+// UnmarshalJSON accepts BOTH the new object shape {"title":"...","description":"..."}
+// AND the legacy string shape "just a title" so old prompts/tests/cached LLM
+// outputs that still emit `"subtasks":["a","b"]` continue to parse cleanly
+// instead of failing the whole plan unmarshal.
+func (s *managerPlanSubtask) UnmarshalJSON(data []byte) error {
+        trimmed := strings.TrimSpace(string(data))
+        if len(trimmed) > 0 && trimmed[0] == '"' {
+                var str string
+                if err := json.Unmarshal(data, &str); err != nil {
+                        return err
+                }
+                s.Title = str
+                return nil
+        }
+        type raw managerPlanSubtask
+        var r raw
+        if err := json.Unmarshal(data, &r); err != nil {
+                return err
+        }
+        *s = managerPlanSubtask(r)
+        return nil
+}
+
+// outlineEntry is the high-level phase list persisted on the plan. It only
+// carries titles — full task details are generated on-demand per phase.
+type outlineEntry struct {
+        Number int    `json:"number"`
+        Title  string `json:"title"`
 }
 
 type managerDecision struct {
-        Action   string             `json:"action"`
-        Text     string             `json:"text"`
-        Question string             `json:"question"`
-        Summary  string             `json:"summary"`
-        Phases   []managerPlanPhase `json:"phases"`
+        Action       string             `json:"action"`
+        Text         string             `json:"text"`
+        Question     string             `json:"question"`
+        GoalSummary  string             `json:"goal_summary"`
+        Outline      []outlineEntry     `json:"outline"`
+        CurrentPhase *managerPlanPhase  `json:"current_phase"`
+        // Legacy field kept so old prompts/tests still parse, but ignored.
+        Phases []managerPlanPhase `json:"phases"`
 }
 
 func NewManager(database *db.DB, pool *llm.Pool, executor *tools.Executor,
@@ -163,11 +241,7 @@ func (m *Manager) HandleUserMessage(ctx context.Context, userText string) {
         ctx = runCtx
 
         m.trace(ctx, "building_context", "loading docs, conversation history, repo snapshot")
-        docCtx, err := BuildDocContext(ctx, m.db, "", 12)
-        if err != nil {
-                m.trace(ctx, "doc_context_error", err.Error())
-                docCtx = "(documentation unavailable)"
-        }
+        docCtx := m.buildFullDocContext(ctx, 60000)
         convo := m.recentConvo(ctx, 20)
         repoInfo, repoErr := m.exec.ScanRepo(ctx)
         if repoErr != nil {
@@ -253,12 +327,34 @@ USER MESSAGE:
                                 llm.Message{Role: "user", Content: "ANSWER: " + answer},
                         )
                 case "plan":
-                        preview := formatPlanPreview(d.Summary, d.Phases)
-                        m.trace(ctx, "plan_proposed", fmt.Sprintf("phases=%d summary=%s", len(d.Phases), truncateStr(d.Summary, 120)))
+                        // Tolerate the legacy {"phases":[...]} shape: if the LLM ignored
+                        // the new schema, lift phase 1 into current_phase and use the rest
+                        // as the outline.
+                        if d.CurrentPhase == nil && len(d.Phases) > 0 {
+                                first := d.Phases[0]
+                                d.CurrentPhase = &first
+                                if len(d.Outline) == 0 {
+                                        for _, p := range d.Phases {
+                                                d.Outline = append(d.Outline, outlineEntry{Number: p.Number, Title: p.Title})
+                                        }
+                                }
+                        }
+                        if d.CurrentPhase == nil || len(d.CurrentPhase.Tasks) == 0 {
+                                m.trace(ctx, "plan_empty", "no current_phase tasks")
+                                m.send("⚠️ Manager produced an empty plan — please rephrase.")
+                                return
+                        }
+                        if len(d.Outline) == 0 {
+                                d.Outline = []outlineEntry{{Number: d.CurrentPhase.Number, Title: d.CurrentPhase.Title}}
+                        }
+                        preview := formatPlanPreview(d.GoalSummary, d.Outline, d.CurrentPhase)
+                        m.trace(ctx, "plan_proposed",
+                                fmt.Sprintf("outline=%d current_phase=%d tasks=%d goal=%s",
+                                        len(d.Outline), d.CurrentPhase.Number, len(d.CurrentPhase.Tasks), truncateStr(d.GoalSummary, 120)))
                         answer := m.ask(preview + "\n\nReply **go** to queue this plan, or tell me what to change.")
                         m.trace(ctx, "plan_decision", truncateStr(answer, 200))
                         if isYes(answer) || strings.EqualFold(strings.TrimSpace(answer), "go") {
-                                m.persistPlanAndQueue(ctx, d.Summary, d.Phases)
+                                m.persistInitialPlan(ctx, d.GoalSummary, d.Outline, d.CurrentPhase)
                                 return
                         }
                         if strings.TrimSpace(answer) == "" {
@@ -286,68 +382,55 @@ USER MESSAGE:
 // SetNotifyStatus wires a callback the manager invokes when busy/idle changes.
 func (m *Manager) SetNotifyStatus(fn func()) { m.notifyStatus = fn }
 
-func (m *Manager) persistPlanAndQueue(ctx context.Context, summary string, phases []managerPlanPhase) {
-        m.trace(ctx, "persist_plan", fmt.Sprintf("phases=%d", len(phases)))
-        if len(phases) == 0 {
-                m.send("⚠️ Plan was empty — nothing queued.")
-                return
-        }
+// persistInitialPlan saves a brand-new plan: the full phase outline + the
+// detailed tasks for the FIRST phase only. Subsequent phases are detailed
+// on demand by planNextPhase after the prior phase merges.
+func (m *Manager) persistInitialPlan(ctx context.Context, goal string, outline []outlineEntry, current *managerPlanPhase) {
+        m.trace(ctx, "persist_initial_plan",
+                fmt.Sprintf("phases=%d current_phase=%d tasks=%d", len(outline), current.Number, len(current.Tasks)))
 
         plan, err := m.db.CreatePlan(ctx)
         if err != nil {
                 m.send("⚠️ Could not save plan: " + err.Error())
                 return
         }
+        outlineJSON, _ := json.Marshal(outline)
+        _ = m.db.SetPlanOutline(ctx, plan.ID, string(outlineJSON), goal)
+        _ = m.db.SetPlanCurrentPhase(ctx, plan.ID, current.Number)
+
+        firstID, firstTitle, totalTasks := m.persistPhaseTasks(ctx, plan.ID, current)
 
         var sb strings.Builder
-        if strings.TrimSpace(summary) != "" {
-                sb.WriteString("📋 **Plan:** ")
-                sb.WriteString(summary)
+        sb.WriteString("📋 **Plan ready**\n\n")
+        if strings.TrimSpace(goal) != "" {
+                sb.WriteString("**Goal:** ")
+                sb.WriteString(goal)
                 sb.WriteString("\n\n")
-        } else {
-                sb.WriteString("📋 **Plan ready**\n\n")
         }
-
-        // Persist every task (top-level + subtasks) so the user can see the
-        // full plan tree in the Builder tab. But only enqueue ONE builder
-        // job — for the very first top-level task — so phases execute
-        // strictly sequentially: the next task is queued only after the
-        // previous PR is merged in ReviewBuilderJob.
-        firstTaskID := 0
-        firstTaskTitle := ""
-        totalTasks := 0
-        for _, phase := range phases {
-                sb.WriteString(fmt.Sprintf("**Phase %d — %s**\n", phase.Number, phase.Title))
-                for _, t := range phase.Tasks {
-                        dbTask, err := m.db.CreateTask(ctx, plan.ID, nil, phase.Number, t.Title, t.Description, false)
-                        if err != nil {
-                                continue
-                        }
-                        _ = m.db.UpdateTaskStatus(ctx, dbTask.ID, "approved")
-                        for _, st := range t.Subtasks {
-                                if sub, err := m.db.CreateTask(ctx, plan.ID, &dbTask.ID, phase.Number, st, "", false); err == nil && sub != nil {
-                                        _ = m.db.UpdateTaskStatus(ctx, sub.ID, "pending")
-                                }
-                        }
-                        if firstTaskID == 0 {
-                                firstTaskID = dbTask.ID
-                                firstTaskTitle = t.Title
-                        }
-                        totalTasks++
-                        sb.WriteString("  • ")
-                        sb.WriteString(t.Title)
-                        sb.WriteString("\n")
+        sb.WriteString("**Outline (all phases):**\n")
+        for _, p := range outline {
+                marker := "•"
+                if p.Number == current.Number {
+                        marker = "▶"
                 }
+                sb.WriteString(fmt.Sprintf("%s Phase %d — %s\n", marker, p.Number, p.Title))
+        }
+        sb.WriteString(fmt.Sprintf("\n**Phase %d detailed (%d task(s)):**\n", current.Number, totalTasks))
+        for _, t := range current.Tasks {
+                sb.WriteString("  • ")
+                sb.WriteString(t.Title)
+                sb.WriteString("\n")
         }
 
-        if firstTaskID > 0 {
-                branch := fmt.Sprintf("feature/task-%d-%s", firstTaskID, slugify(firstTaskTitle))
-                if _, err := m.db.CreateBuilderJob(ctx, firstTaskID, branch); err != nil {
+        if firstID > 0 {
+                branch := fmt.Sprintf("feature/task-%d-%s", firstID, slugify(firstTitle))
+                if _, err := m.db.CreateBuilderJob(ctx, firstID, branch); err != nil {
                         m.send("⚠️ Could not queue first builder job: " + err.Error())
                 }
-                sb.WriteString(fmt.Sprintf("\n%d task(s) saved. Builder will run them one at a time — starting with **%s**. Next task gets queued only after the previous PR is merged.", totalTasks, firstTaskTitle))
+                sb.WriteString(fmt.Sprintf("\nBuilder will start with **%s**. I'll detail Phase %d only after this phase merges.\n",
+                        firstTitle, current.Number+1))
         } else {
-                sb.WriteString("\n⚠️ No tasks were created — plan was empty.")
+                sb.WriteString("\n⚠️ No tasks were created.")
         }
         m.send(sb.String())
 
@@ -356,47 +439,347 @@ func (m *Manager) persistPlanAndQueue(ctx context.Context, summary string, phase
         }
 }
 
-// enqueueNextTaskAfterMerge picks the next approved-but-unqueued task in the
-// active plan (lowest phase, lowest id) and creates a builder job for it.
-// Called after a PR is successfully merged. Returns the new job, or nil if
-// the plan is exhausted.
+// persistPhaseTasks inserts the top-level tasks + subtasks for one phase
+// and returns (firstTaskID, firstTaskTitle, totalTopLevelTasks).
+func (m *Manager) persistPhaseTasks(ctx context.Context, planID int, phase *managerPlanPhase) (int, string, int) {
+        firstID := 0
+        firstTitle := ""
+        total := 0
+        for _, t := range phase.Tasks {
+                dbTask, err := m.db.CreateTask(ctx, planID, nil, phase.Number, t.Title, t.Description, false)
+                if err != nil || dbTask == nil {
+                        continue
+                }
+                _ = m.db.UpdateTaskStatus(ctx, dbTask.ID, "approved")
+                for _, st := range t.Subtasks {
+                        if sub, err := m.db.CreateTask(ctx, planID, &dbTask.ID, phase.Number, st.Title, st.Description, false); err == nil && sub != nil {
+                                _ = m.db.UpdateTaskStatus(ctx, sub.ID, "pending")
+                        }
+                }
+                if firstID == 0 {
+                        firstID = dbTask.ID
+                        firstTitle = t.Title
+                }
+                total++
+        }
+        return firstID, firstTitle, total
+}
+
+// enqueueNextTaskAfterMerge is called after a PR merges. It first looks for
+// another approved-but-unqueued task in the CURRENT phase. If the current
+// phase is exhausted, it asks the Manager LLM to detail the next phase from
+// the outline. If no more phases exist, the plan is marked exhausted.
+//
+// Backward-compat: legacy plans created before phase-at-a-time planning have
+// no outline persisted (empty string) and current_phase=1. For those we fall
+// back to the old cross-phase queueing via GetNextTaskToQueue so an upgrade
+// in the middle of a long plan doesn't strand the remaining tasks.
 func (m *Manager) enqueueNextTaskAfterMerge(ctx context.Context) {
         plan, err := m.db.GetActivePlan(ctx)
         if err != nil || plan == nil {
                 return
         }
-        next, err := m.db.GetNextTaskToQueue(ctx, plan.ID)
-        if err != nil || next == nil {
+
+        var outline []outlineEntry
+        if strings.TrimSpace(plan.Outline) != "" {
+                _ = json.Unmarshal([]byte(plan.Outline), &outline)
+        }
+
+        // Legacy / pre-migration plans: no outline at all → use the old
+        // queue-next-across-phases path so already-approved tasks finish.
+        if len(outline) == 0 {
+                if next, err := m.db.GetNextTaskToQueue(ctx, plan.ID); err == nil && next != nil {
+                        m.queueTask(ctx, next)
+                        return
+                }
                 _ = m.db.ExhaustPlan(ctx, plan.ID)
                 m.send("🎉 All planned tasks merged. Plan complete.")
                 return
         }
-        branch := fmt.Sprintf("feature/task-%d-%s", next.ID, slugify(next.Title))
-        if _, err := m.db.CreateBuilderJob(ctx, next.ID, branch); err != nil {
+
+        // 1. Try the current phase.
+        if next := m.nextQueueableInPhase(ctx, plan.ID, plan.CurrentPhase); next != nil {
+                m.queueTask(ctx, next)
+                return
+        }
+
+        // 2. Current phase is empty → next phase from outline.
+        nextPhase := m.findNextPhase(outline, plan.CurrentPhase)
+        if nextPhase == nil {
+                _ = m.db.ExhaustPlan(ctx, plan.ID)
+                m.send("🎉 All phases merged. Plan complete.")
+                return
+        }
+
+        // 3. Detail the next phase via a fresh Manager LLM call.
+        m.send(fmt.Sprintf("✅ Phase %d complete. Detailing Phase %d — %s …", plan.CurrentPhase, nextPhase.Number, nextPhase.Title))
+        go m.planNextPhase(context.Background(), plan, outline, *nextPhase)
+}
+
+func (m *Manager) findNextPhase(outline []outlineEntry, current int) *outlineEntry {
+        var best *outlineEntry
+        for i := range outline {
+                p := outline[i]
+                if p.Number > current {
+                        if best == nil || p.Number < best.Number {
+                                best = &p
+                        }
+                }
+        }
+        return best
+}
+
+func (m *Manager) nextQueueableInPhase(ctx context.Context, planID, phase int) *db.Task {
+        tasks, err := m.db.GetTopLevelTasksByPhase(ctx, planID, phase)
+        if err != nil {
+                return nil
+        }
+        for i := range tasks {
+                t := tasks[i]
+                if t.Status != "approved" {
+                        continue
+                }
+                if existing, _ := m.db.GetLatestJobForTask(ctx, t.ID); existing != nil {
+                        continue
+                }
+                return &t
+        }
+        return nil
+}
+
+func (m *Manager) queueTask(ctx context.Context, t *db.Task) {
+        branch := fmt.Sprintf("feature/task-%d-%s", t.ID, slugify(t.Title))
+        if _, err := m.db.CreateBuilderJob(ctx, t.ID, branch); err != nil {
                 m.send("⚠️ Could not queue next task: " + err.Error())
                 return
         }
-        m.send(fmt.Sprintf("➡️ Next task queued: **%s** (phase %d)", next.Title, next.Phase))
+        m.send(fmt.Sprintf("➡️ Next task queued: **%s** (phase %d)", t.Title, t.Phase))
         if m.notifyBuilder != nil {
                 m.notifyBuilder()
         }
 }
 
-// formatPlanPreview renders the proposed plan as markdown for user approval.
-func formatPlanPreview(summary string, phases []managerPlanPhase) string {
-        var sb strings.Builder
-        sb.WriteString("📋 **Proposed plan**")
-        if strings.TrimSpace(summary) != "" {
-                sb.WriteString(" — ")
-                sb.WriteString(summary)
+// planNextPhase invokes the Manager LLM in next-phase mode, asking it to
+// detail one specific phase from the outline. On success it persists the
+// new tasks and queues the first one for the Builder.
+//
+// Liveness: this runs in a goroutine spawned by enqueueNextTaskAfterMerge
+// (post-merge). If the Manager is busy handling a concurrent user message,
+// we retry with backoff rather than dropping the transition — otherwise the
+// next phase would never get planned and the plan would silently stall.
+func (m *Manager) planNextPhase(ctx context.Context, plan *db.Plan, outline []outlineEntry, phase outlineEntry) {
+        var (
+                runCtx context.Context
+                cancel context.CancelFunc
+                ok     bool
+        )
+        backoff := time.Second
+        for attempt := 0; attempt < 30; attempt++ {
+                runCtx, cancel, ok = m.tryStartRun(ctx)
+                if ok {
+                        break
+                }
+                select {
+                case <-ctx.Done():
+                        return
+                case <-time.After(backoff):
+                }
+                if backoff < 10*time.Second {
+                        backoff *= 2
+                }
         }
-        sb.WriteString("\n\n")
-        for _, p := range phases {
-                sb.WriteString(fmt.Sprintf("**Phase %d — %s**\n", p.Number, p.Title))
-                for _, t := range p.Tasks {
-                        sb.WriteString("  • ")
-                        sb.WriteString(t.Title)
-                        sb.WriteString("\n")
+        if !ok {
+                m.send(fmt.Sprintf("⚠️ Could not detail Phase %d — Manager stayed busy too long. Send any message to retry.", phase.Number))
+                return
+        }
+        defer func() {
+                m.finishRun()
+                cancel()
+        }()
+        ctx = runCtx
+
+        docs := m.buildFullDocContext(ctx, 60000)
+        history := m.buildMergedHistory(ctx, plan.ID)
+
+        var outlineSB strings.Builder
+        for _, p := range outline {
+                marker := " "
+                if p.Number < phase.Number {
+                        marker = "✓"
+                } else if p.Number == phase.Number {
+                        marker = "▶"
+                }
+                outlineSB.WriteString(fmt.Sprintf("  %s Phase %d — %s\n", marker, p.Number, p.Title))
+        }
+
+        userPrompt := fmt.Sprintf(`PROJECT DOCS (PRD/spec):
+%s
+
+GOAL SUMMARY:
+%s
+
+PLAN OUTLINE:
+%s
+
+ALREADY MERGED:
+%s
+
+NEXT PHASE TO DETAIL: Phase %d — %s
+
+Produce the JSON for this phase only (current_phase). Reference what already exists in the merged history; do not duplicate work.`,
+                docs,
+                fallback(plan.GoalSummary, "(none recorded)"),
+                outlineSB.String(),
+                history,
+                phase.Number, phase.Title,
+        )
+
+        m.trace(ctx, "next_phase_llm_request", fmt.Sprintf("phase=%d", phase.Number))
+        resp, err := m.llm.ChatJSON(ctx, []llm.Message{
+                {Role: "system", Content: nextPhaseSystemPrompt},
+                {Role: "user", Content: userPrompt},
+        })
+        if err != nil {
+                m.trace(ctx, "next_phase_llm_error", err.Error())
+                m.send(fmt.Sprintf("⚠️ Could not detail Phase %d: %s", phase.Number, err.Error()))
+                return
+        }
+        if len(resp.Choices) == 0 {
+                m.send(fmt.Sprintf("⚠️ Empty response detailing Phase %d.", phase.Number))
+                return
+        }
+        raw := resp.Choices[0].Message.Content
+        m.trace(ctx, "next_phase_llm_response",
+                fmt.Sprintf("body=%s", truncateStr(raw, 300)))
+
+        var d managerDecision
+        if err := json.Unmarshal([]byte(cleanJSON(raw)), &d); err != nil {
+                m.trace(ctx, "next_phase_parse_error", err.Error())
+                m.send("⚠️ Could not parse next-phase plan.")
+                return
+        }
+        if d.CurrentPhase == nil || len(d.CurrentPhase.Tasks) == 0 {
+                m.send(fmt.Sprintf("⚠️ Manager returned no tasks for Phase %d.", phase.Number))
+                return
+        }
+        // Force the phase number to match what we asked for.
+        d.CurrentPhase.Number = phase.Number
+        if strings.TrimSpace(d.CurrentPhase.Title) == "" {
+                d.CurrentPhase.Title = phase.Title
+        }
+
+        firstID, firstTitle, total := m.persistPhaseTasks(ctx, plan.ID, d.CurrentPhase)
+        _ = m.db.SetPlanCurrentPhase(ctx, plan.ID, phase.Number)
+
+        var sb strings.Builder
+        sb.WriteString(fmt.Sprintf("📋 **Phase %d detailed — %s** (%d task(s))\n", phase.Number, d.CurrentPhase.Title, total))
+        for _, t := range d.CurrentPhase.Tasks {
+                sb.WriteString("  • ")
+                sb.WriteString(t.Title)
+                sb.WriteString("\n")
+        }
+        if firstID > 0 {
+                branch := fmt.Sprintf("feature/task-%d-%s", firstID, slugify(firstTitle))
+                if _, err := m.db.CreateBuilderJob(ctx, firstID, branch); err != nil {
+                        m.send("⚠️ Could not queue first builder job: " + err.Error())
+                }
+                sb.WriteString(fmt.Sprintf("\nBuilder will start with **%s**.", firstTitle))
+        }
+        m.send(sb.String())
+        if m.notifyBuilder != nil {
+                m.notifyBuilder()
+        }
+}
+
+// buildFullDocContext loads the complete raw content of every project doc,
+// concatenated oldest-first, capped at maxBytes total. Unlike BuildDocContext
+// (which returns chunked snippets) this gives the Manager the full PRD.
+func (m *Manager) buildFullDocContext(ctx context.Context, maxBytes int) string {
+        docs, err := m.db.GetAllDocsFull(ctx)
+        if err != nil || len(docs) == 0 {
+                return "(no documentation uploaded yet)"
+        }
+        var sb strings.Builder
+        sb.WriteString("=== PROJECT DOCUMENTATION ===\n\n")
+        for _, d := range docs {
+                sb.WriteString(fmt.Sprintf("--- %s ---\n", d.Filename))
+                sb.WriteString(d.RawContent)
+                sb.WriteString("\n\n")
+                if sb.Len() >= maxBytes {
+                        sb.WriteString(fmt.Sprintf("\n(…doc context truncated at %d bytes)\n", maxBytes))
+                        break
+                }
+        }
+        return sb.String()
+}
+
+// buildMergedHistory lists every top-level task in the plan that has been
+// merged, with its phase + PR URL. Lets the next-phase planner see what
+// already exists so it doesn't duplicate work.
+func (m *Manager) buildMergedHistory(ctx context.Context, planID int) string {
+        tasks, err := m.db.GetTasksByPlan(ctx, planID)
+        if err != nil || len(tasks) == 0 {
+                return "(nothing merged yet)"
+        }
+        var sb strings.Builder
+        any := false
+        for _, t := range tasks {
+                if t.ParentID != nil {
+                        continue
+                }
+                if t.Status != "done" {
+                        continue
+                }
+                any = true
+                pr := t.PRURL
+                if pr == "" {
+                        pr = "(no PR URL)"
+                }
+                sb.WriteString(fmt.Sprintf("- [Phase %d] %s — %s\n", t.Phase, t.Title, pr))
+        }
+        if !any {
+                return "(nothing merged yet)"
+        }
+        return sb.String()
+}
+
+func fallback(s, def string) string {
+        if strings.TrimSpace(s) == "" {
+                return def
+        }
+        return s
+}
+
+// formatPlanPreview renders the proposed plan as markdown for user approval:
+// goal + full outline (titles only) + the current phase expanded with tasks
+// and subtasks (with their descriptions).
+func formatPlanPreview(goal string, outline []outlineEntry, current *managerPlanPhase) string {
+        var sb strings.Builder
+        sb.WriteString("📋 **Proposed plan**\n\n")
+        if strings.TrimSpace(goal) != "" {
+                sb.WriteString("**Goal:** ")
+                sb.WriteString(goal)
+                sb.WriteString("\n\n")
+        }
+        if len(outline) > 0 {
+                sb.WriteString("**Outline (all phases):**\n")
+                for _, p := range outline {
+                        marker := "•"
+                        if current != nil && p.Number == current.Number {
+                                marker = "▶"
+                        }
+                        sb.WriteString(fmt.Sprintf("%s Phase %d — %s\n", marker, p.Number, p.Title))
+                }
+                sb.WriteString("\n")
+        }
+        if current != nil {
+                sb.WriteString(fmt.Sprintf("**Phase %d — %s** (detailed now; later phases get detailed after this merges):\n",
+                        current.Number, current.Title))
+                for i, t := range current.Tasks {
+                        sb.WriteString(fmt.Sprintf("  %d. **%s** — %s\n", i+1, t.Title, truncateStr(t.Description, 240)))
+                        for j, st := range t.Subtasks {
+                                sb.WriteString(fmt.Sprintf("       %d.%d %s — %s\n", i+1, j+1, st.Title, truncateStr(st.Description, 180)))
+                        }
                 }
         }
         return sb.String()
