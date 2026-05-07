@@ -12,6 +12,7 @@ type BuilderJob struct {
 	Branch      string
 	PRURL       string
 	PRNumber    int
+	RetryCount  int
 	DiffSummary string
 	TestOutput  string
 	BuildOutput string
@@ -24,10 +25,10 @@ type BuilderJob struct {
 // CreateBuilderJob inserts a new queued job for a task.
 func (d *DB) CreateBuilderJob(ctx context.Context, taskID int, branch string) (*BuilderJob, error) {
 	row := d.pool.QueryRow(ctx, `
-		INSERT INTO builder_jobs(task_id, status, branch)
-		VALUES($1, 'queued', $2)
-		RETURNING id, task_id, status, branch, pr_url, pr_number, diff_summary, test_output, build_output,
-			started_at, finished_at, created_at, updated_at`,
+        INSERT INTO builder_jobs(task_id, status, branch)
+        VALUES($1, 'queued', $2)
+        RETURNING id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+            started_at, finished_at, created_at, updated_at`,
 		taskID, branch)
 	return scanBuilderJob(row)
 }
@@ -35,29 +36,29 @@ func (d *DB) CreateBuilderJob(ctx context.Context, taskID int, branch string) (*
 // GetNextQueuedJob returns the oldest job with status='queued'.
 func (d *DB) GetNextQueuedJob(ctx context.Context) (*BuilderJob, error) {
 	row := d.pool.QueryRow(ctx, `
-		SELECT id, task_id, status, branch, pr_url, pr_number, diff_summary, test_output, build_output,
-			started_at, finished_at, created_at, updated_at
-		FROM builder_jobs
-		WHERE status='queued'
-		ORDER BY created_at ASC, id ASC
-		LIMIT 1`)
+        SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+            started_at, finished_at, created_at, updated_at
+        FROM builder_jobs
+        WHERE status='queued'
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1`)
 	return scanBuilderJob(row)
 }
 
 // UpdateBuilderJob updates status + output fields.
 func (d *DB) UpdateBuilderJob(ctx context.Context, id int, status, prURL string, prNumber int, diffSummary, testOutput, buildOutput string) error {
 	_, err := d.pool.Exec(ctx, `
-		UPDATE builder_jobs
-		SET status=$2,
-			pr_url=$3,
-			pr_number=$4,
-			diff_summary=$5,
-			test_output=$6,
-			build_output=$7,
-			started_at=CASE WHEN $2='running' AND started_at IS NULL THEN NOW() ELSE started_at END,
-			finished_at=CASE WHEN $2 IN ('done','failed','rejected') THEN NOW() ELSE finished_at END,
-			updated_at=NOW()
-		WHERE id=$1`,
+        UPDATE builder_jobs
+        SET status=$2,
+            pr_url=$3,
+            pr_number=$4,
+            diff_summary=$5,
+            test_output=$6,
+            build_output=$7,
+            started_at=CASE WHEN $2='running' AND started_at IS NULL THEN NOW() ELSE started_at END,
+            finished_at=CASE WHEN $2 IN ('done','failed','rejected') THEN NOW() ELSE finished_at END,
+            updated_at=NOW()
+        WHERE id=$1`,
 		id, status, prURL, prNumber, diffSummary, testOutput, buildOutput)
 	return err
 }
@@ -65,23 +66,86 @@ func (d *DB) UpdateBuilderJob(ctx context.Context, id int, status, prURL string,
 // GetBuilderJob returns a job by ID.
 func (d *DB) GetBuilderJob(ctx context.Context, id int) (*BuilderJob, error) {
 	row := d.pool.QueryRow(ctx, `
-		SELECT id, task_id, status, branch, pr_url, pr_number, diff_summary, test_output, build_output,
-			started_at, finished_at, created_at, updated_at
-		FROM builder_jobs
-		WHERE id=$1`, id)
+        SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+            started_at, finished_at, created_at, updated_at
+        FROM builder_jobs
+        WHERE id=$1`, id)
 	return scanBuilderJob(row)
 }
 
 // GetJobForTask returns the most recent job for a task.
 func (d *DB) GetJobForTask(ctx context.Context, taskID int) (*BuilderJob, error) {
 	row := d.pool.QueryRow(ctx, `
-		SELECT id, task_id, status, branch, pr_url, pr_number, diff_summary, test_output, build_output,
-			started_at, finished_at, created_at, updated_at
-		FROM builder_jobs
-		WHERE task_id=$1
-		ORDER BY id DESC
-		LIMIT 1`, taskID)
+        SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+            started_at, finished_at, created_at, updated_at
+        FROM builder_jobs
+        WHERE task_id=$1
+        ORDER BY id DESC
+        LIMIT 1`, taskID)
 	return scanBuilderJob(row)
+}
+
+// UpdateBuilderJobRetry sets retry_count and queues the job again.
+func (d *DB) UpdateBuilderJobRetry(ctx context.Context, id, retryCount int) error {
+	_, err := d.pool.Exec(ctx, `
+        UPDATE builder_jobs
+        SET retry_count=$2,
+            status='queued',
+            started_at=NULL,
+            finished_at=NULL,
+            updated_at=NOW()
+        WHERE id=$1`,
+		id, retryCount)
+	return err
+}
+
+// RequeueBuilderJob sets status back to queued for retry.
+func (d *DB) RequeueBuilderJob(ctx context.Context, id int) error {
+	_, err := d.pool.Exec(ctx, `
+        UPDATE builder_jobs
+        SET status='queued',
+            started_at=NULL,
+            finished_at=NULL,
+            updated_at=NOW()
+        WHERE id=$1`, id)
+	return err
+}
+
+// UpdateBuilderJobStatus updates only the status field.
+func (d *DB) UpdateBuilderJobStatus(ctx context.Context, id int, status string) error {
+	_, err := d.pool.Exec(ctx, `
+        UPDATE builder_jobs
+        SET status=$2,
+            started_at=CASE WHEN $2='running' AND started_at IS NULL THEN NOW() ELSE started_at END,
+            finished_at=CASE WHEN $2 IN ('done','failed','rejected') THEN NOW() ELSE finished_at END,
+            updated_at=NOW()
+        WHERE id=$1`,
+		id, status)
+	return err
+}
+
+// GetStaleBuilderJobs returns jobs stuck in running state for over 10 minutes.
+func (d *DB) GetStaleBuilderJobs(ctx context.Context) ([]BuilderJob, error) {
+	rows, err := d.pool.Query(ctx, `
+        SELECT id, task_id, status, branch, pr_url, pr_number, retry_count, diff_summary, test_output, build_output,
+            started_at, finished_at, created_at, updated_at
+        FROM builder_jobs
+        WHERE status='running' AND updated_at < NOW() - INTERVAL '10 minutes'
+        ORDER BY updated_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []BuilderJob
+	for rows.Next() {
+		job, err := scanBuilderJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, *job)
+	}
+	return jobs, rows.Err()
 }
 
 // SaveManagerNote saves the manager's review note for a job.
@@ -106,6 +170,7 @@ func scanBuilderJob(row scannable) (*BuilderJob, error) {
 		&j.Branch,
 		&j.PRURL,
 		&j.PRNumber,
+		&j.RetryCount,
 		&j.DiffSummary,
 		&j.TestOutput,
 		&j.BuildOutput,

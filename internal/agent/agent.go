@@ -28,9 +28,11 @@ type Agent struct {
 }
 
 func New(database *db.DB, pool *llm.Pool, executor *tools.Executor,
-	send func(string), ask func(string) string) *Agent {
-	builder := NewBuilder(database, pool, executor, send)
-	manager := NewManager(database, pool, executor, send, ask)
+	send func(string), ask func(string) string,
+	sendPRReview func(jobID int, taskTitle, prURL, note, diff string),
+	sendBuilderStatus func(taskTitle, milestone, detail string)) *Agent {
+	builder := NewBuilder(database, pool, executor, send, sendBuilderStatus)
+	manager := NewManager(database, pool, executor, send, ask, sendPRReview)
 	manager.builder = builder
 	return &Agent{manager: manager, builder: builder, db: database}
 }

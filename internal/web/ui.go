@@ -180,6 +180,19 @@ const rawHTML = `<!DOCTYPE html>
       text-align: center;
     }
 
+    .builder-pill {
+      font-size: 12px;
+      color: var(--muted);
+      background: var(--surface2);
+      border-radius: 20px;
+      padding: 3px 10px;
+      max-width: 200px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex-shrink: 1;
+    }
+
     .icon-btn {
       background: none; border: none; cursor: pointer; color: var(--muted);
       width: 44px; height: 44px; border-radius: 22px;
@@ -241,6 +254,70 @@ const rawHTML = `<!DOCTYPE html>
     .msg-bubble pre code { background: none; padding: 0; }
     .msg-bubble ul, .msg-bubble ol { padding-left: 20px; margin: 4px 0; }
     .msg-bubble strong { color: #fff; }
+
+    .pr-card {
+      border: 1px solid rgba(88,166,255,0.3);
+      border-radius: 14px;
+      background: rgba(88,166,255,0.06);
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-width: 100%;
+    }
+    .pr-card-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .pr-badge {
+      background: rgba(63,185,80,0.2);
+      color: var(--green);
+      border-radius: 20px;
+      padding: 3px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .pr-title {
+      font-size: 15px;
+      font-weight: 600;
+      flex: 1;
+    }
+    .pr-link {
+      font-size: 13px;
+      color: var(--accent);
+      text-decoration: none;
+      flex-shrink: 0;
+    }
+    .pr-note {
+      font-size: 14px;
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .pr-diff {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .pr-diff summary {
+      cursor: pointer;
+      user-select: none;
+      margin-bottom: 6px;
+    }
+    .pr-diff pre {
+      background: rgba(0,0,0,0.3);
+      border-radius: 8px;
+      padding: 10px;
+      overflow-x: auto;
+      font-size: 12px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .pr-ts {
+      font-size: 11px;
+      color: var(--muted);
+    }
 
     .history-sep {
       display: flex; align-items: center; gap: 8px;
@@ -411,6 +488,7 @@ const rawHTML = `<!DOCTYPE html>
           x-text="Math.round(status.trust)+'%'"></span>
       </div>
       <div class="header-project" x-text="status.project||'Kaptaan'"></div>
+      <div class="builder-pill" x-show="builderStatus.milestone" x-text="builderStatusLabel()"></div>
       <button class="icon-btn" @click="showMenu=true" aria-label="Commands">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -424,10 +502,27 @@ const rawHTML = `<!DOCTYPE html>
     <div class="feed" id="feed" x-ref="feed">
       <template x-for="(m, i) in messages" :key="i">
         <div>
-          <!-- Separator -->
           <div x-show="m.type==='separator'" class="history-sep" x-text="m.text"></div>
-          <!-- Message bubble -->
-          <div x-show="m.type!=='separator'"
+
+          <template x-if="m.isPRReview">
+            <div class="msg-row agent">
+              <div class="pr-card">
+                <div class="pr-card-header">
+                  <span class="pr-badge">PR ready</span>
+                  <span class="pr-title" x-text="m.task_title"></span>
+                  <a class="pr-link" :href="m.pr_url" target="_blank" rel="noopener noreferrer">View on GitHub ↗</a>
+                </div>
+                <div class="pr-note" x-html="renderMsg(m.manager_note)"></div>
+                <details class="pr-diff">
+                  <summary>Show diff</summary>
+                  <pre x-text="m.diff_summary"></pre>
+                </details>
+                <div class="pr-ts" x-text="m.ts"></div>
+              </div>
+            </div>
+          </template>
+
+          <div x-show="m.type!=='separator' && !m.isPRReview"
             class="msg-row"
             :class="m.type==='reply' ? 'user-row' : 'agent'">
             <div class="msg-bubble"
@@ -578,6 +673,7 @@ function kaptaan() {
     // ── App state ────────────────────────────────────────────────
     messages:  [],
     status:    { state: 'new', trust: 0, project: '', plan: 'none' },
+    builderStatus: { taskTitle: '', milestone: '', detail: '' },
     askActive: false,
     replyText: '',
     showMenu:  false,
@@ -633,6 +729,7 @@ function kaptaan() {
       if (this._es) { this._es.close(); this._es = null; }
       this.messages   = [];
       this.connected  = false;
+      this.builderStatus = { taskTitle: '', milestone: '', detail: '' };
       this.askActive  = false;
       this.replyText  = '';
       this.authUser   = '';
@@ -656,6 +753,24 @@ function kaptaan() {
       es.addEventListener('msg', e => {
         try {
           const m = JSON.parse(e.data);
+          if (m.type === 'builder_status') {
+            this.builderStatus = {
+              taskTitle: m.task_title || '',
+              milestone: m.milestone || '',
+              detail: m.detail || '',
+            };
+            if (m.milestone === 'pr_opened') {
+              setTimeout(() => {
+                this.builderStatus = { taskTitle: '', milestone: '', detail: '' };
+              }, 5000);
+            }
+            return;
+          }
+          if (m.type === 'pr_review') {
+            this.push({ ...m, isPRReview: true });
+            this.askActive = true;
+            return;
+          }
           this.push(m);
           if (m.type === 'ask') this.askActive = true;
         } catch {}
@@ -697,6 +812,14 @@ function kaptaan() {
     renderMsg(text) {
       if (!text) return '';
       return DOMPurify.sanitize(marked.parse(text));
+    },
+
+    builderStatusLabel() {
+      const icons = {
+        started: '🔨', coding: '✍️', building: '⚙️', testing: '🧪', pr_opened: '✅'
+      };
+      const icon = icons[this.builderStatus.milestone] || '⏳';
+      return icon + ' ' + this.builderStatus.taskTitle + ': ' + this.builderStatus.detail;
     },
 
     // ── Reply ────────────────────────────────────────────────────
