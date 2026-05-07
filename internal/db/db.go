@@ -1,43 +1,43 @@
 package db
 
 import (
-        "context"
-        "fmt"
-        "time"
+	"context"
+	"fmt"
+	"time"
 
-        "github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // DB wraps pgxpool for all database operations.
 type DB struct {
-        pool *pgxpool.Pool
+	pool *pgxpool.Pool
 }
 
 // New connects to Postgres and initialises the schema.
 func New(ctx context.Context, dsn string) (*DB, error) {
-        cfg, err := pgxpool.ParseConfig(dsn)
-        if err != nil {
-                return nil, fmt.Errorf("parse dsn: %w", err)
-        }
-        cfg.MaxConns = 5
-        cfg.MinConns = 1
-        cfg.MaxConnLifetime = 30 * time.Minute
-        cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse dsn: %w", err)
+	}
+	cfg.MaxConns = 5
+	cfg.MinConns = 1
+	cfg.MaxConnLifetime = 30 * time.Minute
+	cfg.MaxConnIdleTime = 5 * time.Minute
 
-        pool, err := pgxpool.NewWithConfig(ctx, cfg)
-        if err != nil {
-                return nil, fmt.Errorf("connect: %w", err)
-        }
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
 
-        if err := pool.Ping(ctx); err != nil {
-                return nil, fmt.Errorf("ping: %w", err)
-        }
+	if err := pool.Ping(ctx); err != nil {
+		return nil, fmt.Errorf("ping: %w", err)
+	}
 
-        d := &DB{pool: pool}
-        if err := d.migrate(ctx); err != nil {
-                return nil, fmt.Errorf("migrate: %w", err)
-        }
-        return d, nil
+	d := &DB{pool: pool}
+	if err := d.migrate(ctx); err != nil {
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	return d, nil
 }
 
 // Close releases all connections.
@@ -91,6 +91,29 @@ CREATE TABLE IF NOT EXISTS tasks (
         pr_url        TEXT NOT NULL DEFAULT '',
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS builder_jobs (
+        id           SERIAL PRIMARY KEY,
+        task_id      INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        status       TEXT NOT NULL DEFAULT 'queued',
+        branch       TEXT NOT NULL DEFAULT '',
+        pr_url       TEXT NOT NULL DEFAULT '',
+        pr_number    INTEGER NOT NULL DEFAULT 0,
+        diff_summary TEXT NOT NULL DEFAULT '',
+        test_output  TEXT NOT NULL DEFAULT '',
+        build_output TEXT NOT NULL DEFAULT '',
+        started_at   TIMESTAMPTZ,
+        finished_at  TIMESTAMPTZ,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS manager_notes (
+        id         SERIAL PRIMARY KEY,
+        job_id     INTEGER NOT NULL REFERENCES builder_jobs(id) ON DELETE CASCADE,
+        note       TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS task_log (
@@ -157,6 +180,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 `
 
 func (d *DB) migrate(ctx context.Context) error {
-        _, err := d.pool.Exec(ctx, schema)
-        return err
+	_, err := d.pool.Exec(ctx, schema)
+	return err
 }

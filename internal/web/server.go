@@ -592,12 +592,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
                 return
         }
 
-        s.Send(fmt.Sprintf("✅ **%s** ingested — %d chunks tagged.", header.Filename, chunks))
-
-        n, _ := s.db.CountDocChunks(ctx)
-        if n >= 5 {
-                s.Send("📋 Enough docs uploaded! The agent will start asking clarifying questions soon.")
-        }
+        s.Send(fmt.Sprintf("✅ **%s** ingested — %d chunks ready.", header.Filename, chunks))
 
         jsonOK(w, map[string]interface{}{"chunks": chunks, "filename": header.Filename})
 }
