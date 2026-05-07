@@ -204,6 +204,22 @@ func (s *Server) CancelAsk() {
         close(ch)
 }
 
+// clearPendingAsk fully terminates any in-flight question: cancels the
+// blocking Ask(), wipes in-memory state, clears the KV mirror, and tells
+// connected browsers to drop the prompt. Used on project switch / clear /
+// delete so a previous project's "Approve merge?" doesn't ghost into the
+// new context.
+func (s *Server) clearPendingAsk() {
+        s.CancelAsk()
+        s.mu.Lock()
+        s.askActive = false
+        s.pendingQuestion = ""
+        s.activeAskCancel = nil
+        s.mu.Unlock()
+        _ = s.db.KVSet(context.Background(), "pending_ask", "")
+        s.hub.broadcast("event: ask_done\ndata: {}\n\n")
+}
+
 // sseMsg formats a JSON payload as an SSE "msg" event.
 func (s *Server) sseMsg(typ, text string) string {
         data, _ := json.Marshal(map[string]string{

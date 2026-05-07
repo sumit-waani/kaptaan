@@ -22,8 +22,11 @@ func (d *DB) ActiveProjectID(ctx context.Context) int {
         return n
 }
 
-// SetActiveProject stores the active project id in KV.
+// SetActiveProject stores the active project id in KV. It also clears any
+// global pending-question state — those belong to the previous project's
+// conversation and would otherwise resurrect as ghost prompts.
 func (d *DB) SetActiveProject(ctx context.Context, id int) error {
+        _ = d.KVSet(ctx, "pending_ask", "")
         return d.KVSet(ctx, "active_project_id", strconv.Itoa(id))
 }
 
@@ -133,6 +136,11 @@ func (d *DB) ClearProjectData(ctx context.Context, id int) error {
                 if _, err := d.pool.Exec(ctx, s, id); err != nil {
                         return err
                 }
+        }
+        // Clear global pending-question state so a wiped/recreated project
+        // doesn't inherit the old conversation's "Approve merge?" prompt.
+        if id == d.ActiveProjectID(ctx) {
+                _ = d.KVSet(ctx, "pending_ask", "")
         }
         return nil
 }

@@ -135,15 +135,22 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
                         jsonErr(w, err.Error(), http.StatusInternalServerError)
                         return
                 }
+                // Kill any in-flight ask + in-memory pending question — it
+                // belongs to the previous project's conversation.
+                s.clearPendingAsk()
                 s.BroadcastStatus(ctx)
                 s.BroadcastBuilderState(ctx)
                 s.Send(fmt.Sprintf("🔀 Active project switched to **#%d**", id))
                 jsonOK(w, map[string]interface{}{"ok": "activated", "active_id": id})
 
         case subAction == "clear" && r.Method == http.MethodPost:
+                wasActive := s.db.ActiveProjectID(ctx) == id
                 if err := s.db.ClearProjectData(ctx, id); err != nil {
                         jsonErr(w, err.Error(), http.StatusInternalServerError)
                         return
+                }
+                if wasActive {
+                        s.clearPendingAsk()
                 }
                 s.BroadcastStatus(ctx)
                 s.BroadcastBuilderState(ctx)
@@ -184,6 +191,10 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
                 jsonOK(w, map[string]string{"ok": "updated"})
 
         case subAction == "" && r.Method == http.MethodDelete:
+                // Capture active-ness BEFORE the row is gone — ActiveProjectID()
+                // silently falls back to 1 once the stored id no longer exists,
+                // which would otherwise mask the "we deleted the active one" case.
+                wasActive := s.db.ActiveProjectID(ctx) == id
                 if err := s.db.DeleteProject(ctx, id); err != nil {
                         if errors.Is(err, db.ErrLastProject) {
                                 jsonErr(w, err.Error(), http.StatusBadRequest)
@@ -192,8 +203,11 @@ func (s *Server) handleProjectByID(w http.ResponseWriter, r *http.Request) {
                         jsonErr(w, err.Error(), http.StatusInternalServerError)
                         return
                 }
-                // If we just deleted the active one, fall back to the lowest-id remaining.
-                if s.db.ActiveProjectID(ctx) == id {
+                if wasActive {
+                        // Always reassign to a real remaining project; never let
+                        // the KV pointer dangle (the silent fallback to id=1 made
+                        // recreated projects inherit project-1 chat history).
+                        s.clearPendingAsk()
                         if ps, err := s.db.ListProjects(ctx); err == nil && len(ps) > 0 {
                                 _ = s.db.SetActiveProject(ctx, ps[0].ID)
                         }
