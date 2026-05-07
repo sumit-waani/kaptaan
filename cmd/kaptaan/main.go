@@ -58,11 +58,10 @@ func main() {
         log.Println("✅ LLM pool ready")
 
         // ── Manager executor (no live workspace; merges PRs via GitHub REST) ─
-        githubRepo := os.Getenv("GITHUB_REPO")
-        githubToken := os.Getenv("GITHUB_TOKEN")
-        managerExec := tools.NewNoopExecutor(githubRepo, githubToken)
-        // Resolve repo+token at every Manager merge_pr — uses the active project's
-        // values when set, else falls back to env (the static fields).
+        // GitHub repo + token live in the database now (per-project). The
+        // executor resolves them on every merge_pr call from the active
+        // project. No env-var fallback — fully UI-managed.
+        managerExec := tools.NewNoopExecutor("", "")
         managerExec.Resolver = func(ctx context.Context) (string, string, error) {
                 proj, err := database.GetActiveProject(ctx)
                 if err != nil || proj == nil {
@@ -72,16 +71,13 @@ func main() {
         }
 
         // ── Builder config (per-job E2B sandbox) ────────────────────────────
+        // GithubRepo/GithubToken intentionally left blank: the Builder reads
+        // them from the active project record per job.
         builderCfg := agent.BuilderConfig{
-                E2BAPIKey:   os.Getenv("E2B_API_KEY"),
-                GithubRepo:  githubRepo,
-                GithubToken: githubToken,
+                E2BAPIKey: os.Getenv("E2B_API_KEY"),
         }
         if builderCfg.E2BAPIKey == "" {
                 log.Println("⚠️  E2B_API_KEY not set — Builder jobs will fail until it is configured.")
-        }
-        if githubToken == "" || githubRepo == "" {
-                log.Println("⚠️  GITHUB_REPO/GITHUB_TOKEN not fully set — Builder will not be able to clone or open PRs.")
         }
 
         // ── Wire agent ──────────────────────────────────────────────────────

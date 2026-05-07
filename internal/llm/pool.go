@@ -16,14 +16,15 @@ import (
 
 const (
         deepseekURL = "https://api.deepseek.com/v1/chat/completions"
-        // Default to DeepSeek's V4-Pro reasoning model. Override with
-        // DEEPSEEK_MODEL env var if a different DeepSeek model is desired
-        // (e.g. "deepseek-chat" for the lighter/cheaper "flash" tier).
-        defaultDeepseekModel = "deepseek-reasoner"
+        // DeepSeek-V4-Pro is the only supported model. The legacy
+        // "deepseek-chat" and "deepseek-reasoner" aliases are deprecated and
+        // silently route to the cheaper V4-Flash tier, which we do NOT want.
+        // Override only if you know you have access to a newer Pro variant.
+        defaultDeepseekModel = "deepseek-v4-pro"
 )
 
 // deepseekModel is resolved at startup from $DEEPSEEK_MODEL or falls back
-// to the V4-Pro reasoner. Stored as a package-level var so the rest of the
+// to deepseek-v4-pro. Stored as a package-level var so the rest of the
 // pool code (status, requests) sees a single source of truth.
 var deepseekModel = func() string {
         if m := os.Getenv("DEEPSEEK_MODEL"); m != "" {
