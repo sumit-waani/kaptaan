@@ -13,6 +13,7 @@ import (
         "os"
         "strings"
         "sync"
+        "time"
 
         "github.com/cto-agent/cto-agent/internal/db"
         "github.com/cto-agent/cto-agent/internal/llm"
@@ -125,9 +126,12 @@ func (a *Agent) HandleUserMessage(ctx context.Context, projectID int, text strin
                 }
 
                 for _, call := range choice.ToolCalls {
-                        out := turn.dispatch(ctx, call)
-                        turn.appendToolResult(call.ID, out)
-                }
+                                log.Printf("[tool] → %s %s", call.Function.Name, truncate(call.Function.Arguments, 200))
+                                tStart := time.Now()
+                                out := turn.dispatch(ctx, call)
+                                log.Printf("[tool] ← %s %.1fs | %s", call.Function.Name, time.Since(tStart).Seconds(), truncate(out, 150))
+                                turn.appendToolResult(call.ID, out)
+                        }
         }
         a.hooks.Send(projectID, "⚠️ Reached the iteration limit for this turn. Send another message to continue.")
         a.commitTurn(projectID, turn)
@@ -300,6 +304,51 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
         a.sandboxes[projectID] = ps
         a.sbMu.Unlock()
         return runtime, nil
+}
+
+// ReadScratchpad reads scratchpad.md from the active sandbox.
+// Used by the settings UI. Does not spin up a new sandbox if none exists.
+func (a *Agent) ReadScratchpad(ctx context.Context, projectID int) (string, error) {
+        a.sbMu.Lock()
+        ps := a.sandboxes[projectID]
+        a.sbMu.Unlock()
+
+        if ps != nil {
+                r := ps.runtime.ReadFile(ctx, "/home/user/workspace/scratchpad.md")
+                if r.IsErr {
+                        return "", fmt.Errorf("%s", r.Output)
+                }
+                return r.Output, nil
+        }
+
+        // No in-memory sandbox — try to reconnect to a paused one from DB.
+        if a.e2bKey == "" {
+                return "", fmt.Errorf("no active sandbox")
+        }
+        mem, err := a.db.GetMemory(ctx, projectID, "_sandbox_id")
+        if err != nil || mem.Content == "" {
+                return "", fmt.Errorf("no active sandbox — send a task first")
+        }
+        sb, err := sandbox.Connect(ctx, a.e2bKey, mem.Content)
+        if err != nil {
+                return "", fmt.Errorf("sandbox unavailable: %w", err)
+        }
+        rt := &tools.SandboxRuntime{
+                Sandbox: sb,
+                Cwd:     "/home/user/workspace",
+                Env: map[string]string{
+                        "HOME": "/home/user",
+                        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                },
+        }
+        a.sbMu.Lock()
+        a.sandboxes[projectID] = &projectSandbox{runtime: rt, branch: "kaptaan"}
+        a.sbMu.Unlock()
+        r := rt.ReadFile(ctx, "/home/user/workspace/scratchpad.md")
+        if r.IsErr {
+                return "", fmt.Errorf("%s", r.Output)
+        }
+        return r.Output, nil
 }
 
 func (a *Agent) resetSandbox(ctx context.Context, projectID int) {

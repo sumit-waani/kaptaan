@@ -539,6 +539,22 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
   text-align: right;
 }
 
+.scratchpad-block {
+  background: #111;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #c9d1d9;
+  overflow-y: auto;
+  max-height: 300px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-overflow-scrolling: touch;
+}
+
 .action-btn {
   display: flex;
   align-items: center;
@@ -783,6 +799,22 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
             x-text="credits.loading ? 'checking…' : 'check credits'"></button>
         </div>
 
+        <!-- Scratchpad -->
+        <div class="settings-section">
+          <div class="settings-section-label">scratchpad</div>
+          <template x-if="scratchpad.error">
+            <div class="err-msg" x-text="scratchpad.error"></div>
+          </template>
+          <template x-if="scratchpad.content !== null && !scratchpad.loading && !scratchpad.error">
+            <pre class="scratchpad-block" x-text="scratchpad.content"></pre>
+          </template>
+          <template x-if="scratchpad.content === null && !scratchpad.loading && !scratchpad.error">
+            <div class="empty-list">press refresh to load</div>
+          </template>
+          <button class="action-btn" @click="loadScratchpad()" :disabled="scratchpad.loading"
+            x-text="scratchpad.loading ? 'loading…' : 'refresh'"></button>
+        </div>
+
         <!-- Memories -->
         <div class="settings-section">
           <div class="settings-section-label">memories</div>
@@ -821,6 +853,7 @@ function kaptaan() {
     showSettings: false,
     memories: [],
     credits: { loading: false, error: '', data: null },
+    scratchpad: { loading: false, error: '', content: null },
     toolGroupsOpen: {},
     lastToolName: '',
 
@@ -965,6 +998,7 @@ function kaptaan() {
     openSettings() {
       this.showSettings = true;
       this.refreshSettings();
+      this.loadScratchpad();
     },
 
     closeSettings() {
@@ -979,6 +1013,16 @@ function kaptaan() {
     async deleteMemory(key) {
       await this.api('/api/memories?key='+encodeURIComponent(key), {method:'DELETE'});
       this.memories = this.memories.filter(m=>m.key!==key);
+    },
+
+    async loadScratchpad() {
+      this.scratchpad = { loading: true, error: '', content: null };
+      const j = await this.api('/api/scratchpad');
+      if (j.error) {
+        this.scratchpad = { loading: false, error: j.error, content: null };
+        return;
+      }
+      this.scratchpad = { loading: false, error: '', content: j.content };
     },
 
     async checkCredits() {
