@@ -203,7 +203,15 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
         ps := a.sandboxes[projectID]
         a.sbMu.Unlock()
         if ps != nil {
-                return ps.runtime, nil
+                // Quick health-check: if envd is unreachable (paused/killed by E2B in-session),
+                // drop the stale entry and fall through to reconnect via DB.
+                if sr, ok := ps.runtime.(*tools.SandboxRuntime); ok && sr.Sandbox.Ping(ctx) {
+                        return ps.runtime, nil
+                }
+                log.Printf("[agent] in-memory sandbox is unreachable — reconnecting")
+                a.sbMu.Lock()
+                delete(a.sandboxes, projectID)
+                a.sbMu.Unlock()
         }
 
         if a.e2bKey == "" {

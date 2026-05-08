@@ -111,6 +111,19 @@ func (s *Sandbox) Kill(ctx context.Context) error {
         return nil
 }
 
+// Ping returns true if the sandbox envd is reachable (i.e. running, not paused).
+func (s *Sandbox) Ping(ctx context.Context) bool {
+        hctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+        defer cancel()
+        hreq, _ := http.NewRequestWithContext(hctx, http.MethodGet, s.host()+"/health", nil)
+        r, err := http.DefaultClient.Do(hreq)
+        if err != nil {
+                return false
+        }
+        r.Body.Close()
+        return r.StatusCode == 200 || r.StatusCode == 204
+}
+
 // RunResult holds the outcome of one sandbox shell command.
 type RunResult struct {
         Stdout   string
