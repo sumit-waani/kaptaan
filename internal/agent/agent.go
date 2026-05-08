@@ -272,14 +272,19 @@ func (a *Agent) ensureSandbox(ctx context.Context, proj *db.Project) (tools.Runt
         repoURL := normalizeRepoURL(proj.RepoURL)
         if repoURL != "" && proj.GithubToken != "" {
                 cloneURL := injectToken(repoURL, proj.GithubToken)
+                // IMPORTANT: start with "cd /home/user" so we are NOT inside
+                // /home/user/workspace when we rm -rf it. If we were inside it,
+                // git would fail with "Unable to read current working directory"
+                // because the process's cwd was just deleted.
                 cmd := fmt.Sprintf(
-                        "rm -rf /home/user/workspace && git clone %s /home/user/workspace"+
-                                " && cd /home/user/workspace"+
+                        "cd /home/user && rm -rf workspace && git clone %s workspace"+
+                                " && cd workspace"+
                                 " && git config user.email kaptaan@local"+
                                 " && git config user.name Kaptaan",
                         shellQuote(cloneURL),
                 )
                 if r := runtime.Shell(ctx, cmd, 180); r.IsErr {
+                        log.Printf("[agent] git clone failed (proj=%d repoURL=%s):\n%s", proj.ID, repoURL, r.Output)
                         a.hooks.Send(proj.ID, "⚠️ git clone failed:\n```\n"+truncate(r.Output, 800)+"\n```\nProceeding with empty workspace.")
                 } else {
                         // Auto-create a working branch so all work in this session is isolated.
