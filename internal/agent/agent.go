@@ -115,7 +115,7 @@ func (a *Agent) HandleUserMessage(ctx context.Context, projectID int, text strin
 
         turn.appendUser(text)
 
-        const maxIterations = 30
+        const maxIterations = 200
         for i := 0; i < maxIterations; i++ {
                 resp, err := a.pool.Chat(ctx, turn.messages(), turn.toolDefs())
                 if err != nil {
@@ -344,7 +344,7 @@ func (t *turn) systemPrompt() string {
         b.WriteString("- Plans live as files on disk — use `list_plans` and `read_plan` to recall what you decided in earlier turns.\n")
         b.WriteString("- Use `write_memory` to persist long-lived facts about this project (architecture decisions, conventions). Memories survive forever.\n")
         b.WriteString("- Use `send` to give the user progress updates between tool calls. Markdown is supported.\n")
-        b.WriteString("- Use `ask` to get yes/no or short answers from the user when blocked.\n\n")
+        b.WriteString("- Use `ask` ONLY when you are genuinely blocked and cannot make a reasonable decision yourself (e.g. missing credentials, ambiguous requirements with no good default). **Never use `ask` between phases of the same task.** Work autonomously through all phases without pausing for confirmation — the user will review the PR at the end.\n\n")
 
         b.WriteString("## Sandbox & git workflow\n")
         b.WriteString("- **The sandbox persists across all turns** until you call `reset_sandbox`. All files, installed packages, and git state are preserved between messages — do NOT re-clone or reinstall between phases.\n")
