@@ -373,6 +373,78 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 .bubble-content p { margin: 2px 0; }
 .bubble-content a { text-decoration: underline; opacity: 0.8; }
 
+/* ─── Tool call group ───────────────────────────────────────────────────── */
+.tool-group {
+  max-width: 88%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--ink);
+  overflow: hidden;
+}
+.tool-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.tool-group-header:active { background: rgba(255,255,255,0.03); }
+.tool-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #30d158;
+}
+.tool-status-dot.running {
+  background: #ffd60a;
+  box-shadow: 0 0 5px #ffd60a66;
+  animation: blink 1.2s infinite;
+}
+.tool-group-label {
+  flex: 1;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.tool-group-toggle {
+  font-size: 9px;
+  color: var(--dim);
+  transition: transform 0.15s;
+}
+.tool-group-toggle.open { transform: rotate(180deg); }
+.tool-rows { border-top: 1px solid var(--border); }
+.tool-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.tool-row:last-child { border-bottom: none; }
+.tool-row-icon {
+  font-size: 10px;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+.tool-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--sub);
+  flex-shrink: 0;
+}
+.tool-args {
+  font-size: 11px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
 /* ─── Ask banner ─────────────────────────────────────────────────────────── */
 .ask-banner {
   flex-shrink: 0;
@@ -760,13 +832,41 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
         <template x-if="messages.length > 0">
           <div class="feed-spacer"></div>
         </template>
-        <template x-for="(m, i) in messages" :key="i">
-          <div class="bubble-row" :class="m.type === 'user' || m.type === 'reply' ? 'user' : 'agent'">
-            <div class="bubble" :class="bubbleClass(m)">
-              <div class="bubble-meta" :class="m.type === 'user' ? 'user-meta' : ''"
-                   x-text="bubbleLabel(m) + ' · ' + m.ts"></div>
-              <div class="bubble-content" x-html="render(m.text)"></div>
-            </div>
+        <template x-for="group in groupedMessages()" :key="group.gid">
+          <div>
+            <!-- Tool call group -->
+            <template x-if="group.kind === 'toolgroup'">
+              <div class="bubble-row agent">
+                <div class="tool-group">
+                  <div class="tool-group-header" @click="toggleToolGroup(group.gid)">
+                    <div class="tool-status-dot" :class="isLastToolGroup(group.gid) && agentRunning ? 'running' : ''"></div>
+                    <span class="tool-group-label" x-text="group.tools.length + (group.tools.length === 1 ? ' tool call' : ' tool calls')"></span>
+                    <span class="tool-group-toggle" :class="isToolGroupOpen(group.gid) ? 'open' : ''">▼</span>
+                  </div>
+                  <template x-if="isToolGroupOpen(group.gid)">
+                    <div class="tool-rows">
+                      <template x-for="(t, ti) in group.tools" :key="ti">
+                        <div class="tool-row">
+                          <span class="tool-row-icon">⚡</span>
+                          <span class="tool-name" x-text="parseToolCall(t.text).name"></span>
+                          <span class="tool-args" x-text="parseToolCall(t.text).args"></span>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+            <!-- Regular message -->
+            <template x-if="group.kind === 'message'">
+              <div class="bubble-row" :class="group.msg.type === 'user' || group.msg.type === 'reply' ? 'user' : 'agent'">
+                <div class="bubble" :class="bubbleClass(group.msg)">
+                  <div class="bubble-meta" :class="group.msg.type === 'user' ? 'user-meta' : ''"
+                       x-text="bubbleLabel(group.msg) + ' · ' + group.msg.ts"></div>
+                  <div class="bubble-content" x-html="render(group.msg.text)"></div>
+                </div>
+              </div>
+            </template>
           </div>
         </template>
       </div>
@@ -980,6 +1080,7 @@ function kaptaan() {
     edit: { name:'', repo_url:'', github_token:'', error:'' },
     newProjectOpen: false,
     newProject: { name:'', repo_url:'', github_token:'', error:'' },
+    toolGroupsOpen: {},
 
     async init() {
       const s = await fetch('/api/auth/status').then(r=>r.json());
@@ -1063,6 +1164,51 @@ function kaptaan() {
 
     bubbleLabel(m) {
       return ({user:'you', reply:'you', ask:'kaptaan asks', message:'kaptaan'}[m.type])||'kaptaan';
+    },
+
+    isToolCall(m) {
+      return m.type === 'message' && typeof m.text === 'string' && m.text.startsWith('`tool`');
+    },
+
+    groupedMessages() {
+      const groups = [];
+      let i = 0;
+      while (i < this.messages.length) {
+        const m = this.messages[i];
+        if (this.isToolCall(m)) {
+          const startIdx = i;
+          const tools = [];
+          while (i < this.messages.length && this.isToolCall(this.messages[i])) {
+            tools.push(this.messages[i]);
+            i++;
+          }
+          groups.push({ kind: 'toolgroup', tools, gid: 'tg' + startIdx });
+        } else {
+          groups.push({ kind: 'message', msg: m, gid: 'msg' + i });
+          i++;
+        }
+      }
+      return groups;
+    },
+
+    parseToolCall(text) {
+      const m = text.match(/^`tool`\s+\*\*([^*]+)\*\*\s*([\s\S]*)/);
+      if (m) return { name: m[1].trim(), args: m[2].trim() };
+      return { name: text, args: '' };
+    },
+
+    isToolGroupOpen(gid) {
+      return this.toolGroupsOpen[gid] !== false;
+    },
+
+    isLastToolGroup(gid) {
+      const groups = this.groupedMessages();
+      const toolGroups = groups.filter(g => g.kind === 'toolgroup');
+      return toolGroups.length > 0 && toolGroups[toolGroups.length - 1].gid === gid;
+    },
+
+    toggleToolGroup(gid) {
+      this.toolGroupsOpen[gid] = !this.isToolGroupOpen(gid);
     },
 
     render(text) {
