@@ -1,6 +1,6 @@
 module github.com/cto-agent/cto-agent
 
-go 1.22
+go 1.21
 
 require (
         github.com/jackc/pgx/v5 v5.5.5
