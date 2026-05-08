@@ -34,17 +34,12 @@ const indexHTML = `<!doctype html>
   --safe-l:  env(safe-area-inset-left, 0px);
   --safe-r:  env(safe-area-inset-right, 0px);
   --header:  52px;
-  --proj:    44px;
   --compose: 80px;
 }
 
-html {
-  height: 100%;
-}
+html { height: 100%; }
 
 body {
-  /* min-height (not height) with -webkit-fill-available is the correct
-     pattern for iOS Safari; plain height: 100% works on everything else. */
   height: 100%;
   min-height: -webkit-fill-available;
   background: var(--black);
@@ -136,11 +131,6 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 .app {
   display: flex;
   flex-direction: column;
-  /* Use viewport units directly so the shell always fills exactly the visible
-     screen on mobile browsers regardless of address-bar state.
-     dvh = dynamic viewport height (adjusts as browser chrome shows/hides).
-     svh = small viewport height (safe fallback when dvh is unsupported).
-     100vh = last-resort fallback for very old browsers. */
   height: 100vh;
   height: 100svh;
   height: 100dvh;
@@ -215,68 +205,10 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 }
 .icon-btn:active { background: var(--card); }
 
-/* ─── Project bar ───────────────────────────────────────────────────────── */
-.proj-bar {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: var(--proj);
-  padding: 0 calc(var(--safe-l) + 14px) 0 calc(var(--safe-r) + 14px);
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-}
-.proj-bar::-webkit-scrollbar { display: none; }
-
-.proj-select-wrap {
-  flex: 1;
-  min-width: 0;
-  position: relative;
-}
-.proj-select {
-  width: 100%;
-  background: rgba(255,255,255,0.05);
-  border: 1px solid var(--border2);
-  border-radius: 8px;
-  padding: 6px 28px 6px 10px;
-  font-size: 12px;
-  font-family: var(--font);
-  color: var(--sub);
-  appearance: none;
-  -webkit-appearance: none;
-  transition: border-color 0.1s;
-}
-.proj-select:focus { border-color: var(--muted); outline: none; }
-.proj-select-caret {
-  position: absolute;
-  right: 9px;
-  top: 50%;
-  transform: translateY(-50%);
-  pointer-events: none;
-  color: var(--dim);
-}
-.proj-new-btn {
-  flex-shrink: 0;
-  background: rgba(255,255,255,0.05);
-  border: 1px solid var(--border2);
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 12px;
-  font-family: var(--font);
-  color: var(--muted);
-  white-space: nowrap;
-  -webkit-tap-highlight-color: transparent;
-  transition: border-color 0.1s, color 0.1s;
-}
-.proj-new-btn:active { color: var(--sub); border-color: var(--muted); }
-
 /* ─── Feed ──────────────────────────────────────────────────────────────── */
 .feed {
   flex: 1;
-  min-height: 0;        /* critical: lets flex child shrink & scroll */
+  min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
@@ -288,7 +220,6 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 }
 .feed::-webkit-scrollbar { display: none; }
 
-/* pushes messages to the bottom when content is shorter than the feed */
 .feed-spacer { flex: 1 1 0; min-height: 16px; }
 
 .empty-state {
@@ -303,9 +234,7 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 .empty-state svg { opacity: 0.3; }
 .empty-state p { font-size: 12px; text-align: center; }
 
-.bubble-row {
-  display: flex;
-}
+.bubble-row { display: flex; }
 .bubble-row.user { justify-content: flex-end; }
 .bubble-row.agent { justify-content: flex-start; }
 
@@ -367,9 +296,7 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
   padding: 1px 4px;
   font-size: 0.9em;
 }
-.bubble.user-bubble .bubble-content code {
-  background: rgba(0,0,0,0.07);
-}
+.bubble.user-bubble .bubble-content code { background: rgba(0,0,0,0.07); }
 .bubble-content pre code { background: transparent; padding: 0; }
 .bubble-content h1,.bubble-content h2,.bubble-content h3 { font-weight: 600; margin: 6px 0 2px; }
 .bubble-content ul,.bubble-content ol { padding-left: 1.2em; margin: 4px 0; }
@@ -453,17 +380,8 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
   border-bottom: 1px solid var(--border);
 }
 .tool-row:last-child { border-bottom: none; }
-.tool-row-icon {
-  font-size: 10px;
-  flex-shrink: 0;
-  opacity: 0.6;
-}
-.tool-name {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--sub);
-  flex-shrink: 0;
-}
+.tool-row-icon { font-size: 10px; flex-shrink: 0; opacity: 0.6; }
+.tool-name { font-size: 11px; font-weight: 600; color: var(--sub); flex-shrink: 0; }
 .tool-args {
   font-size: 11px;
   color: var(--dim);
@@ -620,26 +538,6 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
   white-space: nowrap;
   text-align: right;
 }
-.settings-input {
-  width: 100%;
-  background: transparent;
-  font-size: 16px;
-  font-family: var(--font);
-  color: var(--text);
-  padding: 12px 14px;
-  display: block;
-}
-.settings-input-row {
-  padding: 0;
-  border-bottom: 1px solid var(--border);
-}
-.settings-input-row:last-child { border-bottom: none; }
-.settings-input-label {
-  font-size: 11px;
-  color: var(--muted);
-  padding: 10px 14px 0;
-  letter-spacing: 0.03em;
-}
 
 .action-btn {
   display: flex;
@@ -661,17 +559,7 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 .action-btn.danger { color: #ff453a; }
 .action-btn.primary { background: var(--white); color: var(--black); border-color: var(--white); font-weight: 600; }
 .action-btn.primary:active { opacity: 0.8; }
-
-.usage-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-}
-.usage-row:last-child { border-bottom: none; }
-.usage-model { font-size: 12px; color: var(--sub); }
-.usage-tokens { font-size: 13px; color: var(--text); }
+.action-btn:disabled { opacity: 0.4; cursor: default; }
 
 .memory-item {
   padding: 12px 14px;
@@ -691,37 +579,6 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 .del-btn { font-size: 11px; color: #ff453a; padding: 4px 0; }
 .del-btn:active { opacity: 0.6; }
 
-.plan-item {
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
-}
-.plan-item:last-child { border-bottom: none; }
-.plan-filename { font-size: 12px; color: var(--sub); margin-bottom: 2px; }
-.plan-meta { font-size: 10px; color: var(--dim); }
-.plan-content {
-  margin-top: 8px;
-  background: var(--ink);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-size: 11px;
-  color: var(--sub);
-  white-space: pre-wrap;
-  overflow-x: auto;
-}
-
-.doc-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
-}
-.doc-item:last-child { border-bottom: none; }
-.doc-info { flex: 1; min-width: 0; }
-.doc-name { font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.doc-meta { font-size: 10px; color: var(--dim); }
-
 .empty-list {
   padding: 20px 14px;
   font-size: 12px;
@@ -730,46 +587,6 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 }
 
 .err-msg { font-size: 12px; color: #ff453a; padding: 8px 14px; }
-
-/* modal */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  background: rgba(0,0,0,0.7);
-  display: flex;
-  align-items: flex-end;
-}
-.modal-sheet {
-  width: 100%;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-  border-radius: 16px 16px 0 0;
-  padding: 16px 16px calc(var(--safe-b) + 16px);
-  max-height: 80vh;
-  overflow-y: auto;
-}
-.modal-handle {
-  width: 36px;
-  height: 4px;
-  background: var(--border2);
-  border-radius: 2px;
-  margin: 0 auto 16px;
-}
-.modal-title { font-size: 14px; font-weight: 600; color: var(--white); margin-bottom: 14px; }
-.modal-input {
-  width: 100%;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px;
-  font-size: 16px;
-  font-family: var(--font);
-  color: var(--text);
-  margin-bottom: 10px;
-  display: block;
-}
-.modal-input:focus { border-color: var(--border2); }
 </style>
 </head>
 <body>
@@ -815,7 +632,7 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
             <path d="M7 22 Q14 26 21 22" stroke="#f2f2f7" stroke-width="1.5" fill="none" stroke-linecap="round"/>
           </svg>
         </div>
-        <div class="header-title" x-text="activeName()"></div>
+        <div class="header-title">kaptaan</div>
         <div class="status-pill">
           <div class="status-dot" :class="agentRunning ? 'running' : 'idle'"></div>
           <span x-text="agentRunning ? ('running' + (lastToolName ? ' · ' + lastToolName : '')) : 'idle'"></span>
@@ -827,21 +644,6 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
           </svg>
         </button>
       </header>
-
-      <!-- Project bar -->
-      <div class="proj-bar">
-        <div class="proj-select-wrap">
-          <select class="proj-select" x-model.number="activeProjectID" @change="onProjectChange()">
-            <template x-for="p in projects" :key="p.id">
-              <option :value="p.id" x-text="p.name"></option>
-            </template>
-          </select>
-          <svg class="proj-select-caret" width="10" height="6" viewBox="0 0 10 6" fill="#8e8e93">
-            <path d="M1 1l4 4 4-4"/>
-          </svg>
-        </div>
-        <button class="proj-new-btn" @click="openNewProject()">+ new</button>
-      </div>
 
       <!-- Feed -->
       <div class="feed" x-ref="feed">
@@ -856,8 +658,6 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
             <p>send a message to start.</p>
           </div>
         </template>
-        <!-- spacer: expands when content is short to push messages to the bottom;
-             shrinks to nothing when content overflows so scrolling takes over -->
         <template x-if="messages.length > 0">
           <div class="feed-spacer"></div>
         </template>
@@ -954,63 +754,36 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 
       <div class="settings-body">
 
-        <!-- Project section -->
+        <!-- Conversation -->
         <div class="settings-section">
-          <div class="settings-section-label">project</div>
-          <div class="settings-card">
-            <div class="settings-input-row">
-              <div class="settings-input-label">name</div>
-              <input class="settings-input" type="text" x-model="edit.name" placeholder="project name" autocapitalize="none" spellcheck="false" />
-            </div>
-            <div class="settings-input-row">
-              <div class="settings-input-label">github repo url</div>
-              <input class="settings-input" type="url" x-model="edit.repo_url" placeholder="https://github.com/owner/repo" autocapitalize="none" spellcheck="false" />
-            </div>
-            <div class="settings-input-row">
-              <div class="settings-input-label">github token <span style="color:var(--dim)">(leave blank to keep)</span></div>
-              <input class="settings-input" type="password" x-model="edit.github_token" placeholder="ghp_…" autocomplete="off" />
-            </div>
-          </div>
-          <template x-if="edit.error">
-            <p class="err-msg" x-text="edit.error"></p>
-          </template>
-          <button class="action-btn primary" @click="saveProject()" style="margin-top:10px">save project</button>
-          <button class="action-btn" @click="clearConvo()" style="margin-top:8px">clear conversation</button>
-          <button class="action-btn danger" @click="deleteProject()" style="margin-top:8px">delete project</button>
+          <div class="settings-section-label">conversation</div>
+          <button class="action-btn" @click="clearConvo()">clear conversation</button>
         </div>
 
-        <!-- Usage section -->
+        <!-- DeepSeek Credit -->
         <div class="settings-section">
-          <div class="settings-section-label">usage</div>
+          <div class="settings-section-label">deepseek credit</div>
           <div class="settings-card">
-            <div class="settings-row" style="padding: 8px 14px; border-bottom: 1px solid var(--border);">
-              <span class="settings-row-label" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em">today</span>
-            </div>
-            <template x-for="r in (usage.today||[])" :key="'t'+r.model">
-              <div class="usage-row">
-                <span class="usage-model" x-text="r.provider + ' / ' + r.model"></span>
-                <span class="usage-tokens" x-text="r.total_tokens.toLocaleString() + ' tok'"></span>
-              </div>
+            <template x-if="credits.data && credits.data.balance_infos">
+              <template x-for="b in credits.data.balance_infos" :key="b.currency">
+                <div class="settings-row">
+                  <span class="settings-row-label" x-text="b.currency + ' balance'"></span>
+                  <span class="settings-row-value" x-text="b.total_balance"></span>
+                </div>
+              </template>
             </template>
-            <template x-if="!usage.today || usage.today.length === 0">
-              <div class="empty-list">no calls today</div>
+            <template x-if="!credits.data">
+              <div class="empty-list">press check to load balance</div>
             </template>
-            <div class="settings-row" style="padding: 8px 14px; border-bottom: 1px solid var(--border); border-top: 1px solid var(--border);">
-              <span class="settings-row-label" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em">all-time</span>
-            </div>
-            <template x-for="r in (usage.all||[])" :key="'a'+r.model">
-              <div class="usage-row">
-                <span class="usage-model" x-text="r.provider + ' / ' + r.model"></span>
-                <span class="usage-tokens" x-text="r.total_tokens.toLocaleString() + ' tok'"></span>
-              </div>
-            </template>
-            <template x-if="!usage.all || usage.all.length === 0">
-              <div class="empty-list">no calls yet</div>
+            <template x-if="credits.error">
+              <div class="err-msg" x-text="credits.error"></div>
             </template>
           </div>
+          <button class="action-btn" @click="checkCredits()" :disabled="credits.loading"
+            x-text="credits.loading ? 'checking…' : 'check credits'"></button>
         </div>
 
-        <!-- Memories section -->
+        <!-- Memories -->
         <div class="settings-section">
           <div class="settings-section-label">memories</div>
           <div class="settings-card">
@@ -1030,69 +803,6 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
           </div>
         </div>
 
-        <!-- Plans section -->
-        <div class="settings-section">
-          <div class="settings-section-label">plans</div>
-          <div class="settings-card">
-            <template x-for="p in plans" :key="p.filename">
-              <div class="plan-item">
-                <div class="plan-filename" x-text="p.filename"></div>
-                <div class="plan-meta" x-text="p.created + ' · ' + p.bytes + ' B'"></div>
-                <template x-if="planView.filename === p.filename">
-                  <pre class="plan-content" x-text="planView.content"></pre>
-                </template>
-                <button style="font-size:11px;color:var(--muted);margin-top:6px;padding:4px 0;" @click="loadPlan(p.filename)">
-                  <span x-text="planView.filename === p.filename ? 'hide' : 'view'"></span>
-                </button>
-              </div>
-            </template>
-            <template x-if="plans.length === 0">
-              <div class="empty-list">no plans</div>
-            </template>
-          </div>
-        </div>
-
-        <!-- Docs section -->
-        <div class="settings-section">
-          <div class="settings-section-label">reference docs</div>
-          <div class="settings-card">
-            <template x-for="d in docs" :key="d.id">
-              <div class="doc-item">
-                <div class="doc-info">
-                  <div class="doc-name" x-text="d.filename"></div>
-                  <div class="doc-meta" x-text="d.created + ' · ' + d.bytes + ' B'"></div>
-                </div>
-                <button class="del-btn" @click="deleteDoc(d.id)">delete</button>
-              </div>
-            </template>
-            <template x-if="docs.length === 0">
-              <div class="empty-list">no docs uploaded</div>
-            </template>
-          </div>
-          <label style="display:block;margin-top:8px;">
-            <div class="action-btn" style="cursor:pointer">upload doc</div>
-            <input type="file" style="display:none" @change="uploadDoc($event)" />
-          </label>
-        </div>
-
-      </div>
-    </div>
-  </template>
-
-  <!-- ── New project modal ─────────────────────────────────────────────────── -->
-  <template x-if="newProjectOpen">
-    <div class="modal-overlay" @click.self="newProjectOpen=false">
-      <div class="modal-sheet">
-        <div class="modal-handle"></div>
-        <div class="modal-title">new project</div>
-        <input class="modal-input" type="text" placeholder="project name" x-model="newProject.name" autocapitalize="none" spellcheck="false" />
-        <input class="modal-input" type="url" placeholder="github repo url (optional)" x-model="newProject.repo_url" autocapitalize="none" spellcheck="false" />
-        <input class="modal-input" type="password" placeholder="github token (optional)" x-model="newProject.github_token" autocomplete="off" />
-        <template x-if="newProject.error">
-          <p class="err-msg" x-text="newProject.error"></p>
-        </template>
-        <button class="action-btn primary" @click="createProject()">create</button>
-        <button class="action-btn" @click="newProjectOpen=false" style="margin-top:8px">cancel</button>
       </div>
     </div>
   </template>
@@ -1103,20 +813,14 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 function kaptaan() {
   return {
     auth: { loggedIn:false, hasUser:false, username:'', password:'', error:'' },
-    projects: [],
-    activeProjectID: null,
     messages: [],
     composer: '',
     agentRunning: false,
     askActive: false,
     sse: null,
     showSettings: false,
-    usage: { all:[], today:[] },
-    memories: [], plans: [], docs: [],
-    planView: { filename:'', content:'' },
-    edit: { name:'', repo_url:'', github_token:'', error:'' },
-    newProjectOpen: false,
-    newProject: { name:'', repo_url:'', github_token:'', error:'' },
+    memories: [],
+    credits: { loading: false, error: '', data: null },
     toolGroupsOpen: {},
     lastToolName: '',
 
@@ -1124,21 +828,21 @@ function kaptaan() {
       const s = await fetch('/api/auth/status').then(r=>r.json());
       this.auth.hasUser  = s.hasUser;
       this.auth.loggedIn = s.loggedIn;
-      if (this.auth.loggedIn) await this.bootApp();
+      if (this.auth.loggedIn) this.bootApp();
     },
 
     async signup() {
       this.auth.error = '';
       const r = await fetch('/api/auth/setup', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:this.auth.username, password:this.auth.password})});
       if (!r.ok) { this.auth.error = (await r.json()).error||'failed'; return; }
-      this.auth.loggedIn = true; this.auth.hasUser = true; await this.bootApp();
+      this.auth.loggedIn = true; this.auth.hasUser = true; this.bootApp();
     },
 
     async login() {
       this.auth.error = '';
       const r = await fetch('/api/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:this.auth.username, password:this.auth.password})});
       if (!r.ok) { this.auth.error = (await r.json()).error||'invalid credentials'; return; }
-      this.auth.loggedIn = true; await this.bootApp();
+      this.auth.loggedIn = true; this.bootApp();
     },
 
     async logout() {
@@ -1147,39 +851,13 @@ function kaptaan() {
       if (this.sse) this.sse.close();
     },
 
-    async bootApp() {
-      await this.loadProjects();
-      const stored = parseInt(localStorage.getItem('kaptaan_pid')||'0');
-      if (stored && this.projects.some(p=>p.id===stored)) this.activeProjectID = stored;
-      else if (this.projects.length) this.activeProjectID = this.projects[0].id;
-      else { this.newProjectOpen = true; return; }
-      this.connect();
-    },
-
-    async loadProjects() {
-      const j = await fetch('/api/projects').then(r=>r.json());
-      this.projects = j.projects || [];
-    },
-
-    activeName() {
-      const p = this.projects.find(p=>p.id===this.activeProjectID);
-      return p ? p.name : 'kaptaan';
-    },
-
-    activeProject() {
-      return this.projects.find(p=>p.id===this.activeProjectID);
-    },
-
-    onProjectChange() {
-      localStorage.setItem('kaptaan_pid', String(this.activeProjectID));
-      this.messages = []; this.askActive = false;
+    bootApp() {
       this.connect();
     },
 
     connect() {
       if (this.sse) this.sse.close();
-      if (!this.activeProjectID) return;
-      this.sse = new EventSource('/events?project='+this.activeProjectID);
+      this.sse = new EventSource('/events');
       this.sse.addEventListener('msg', e => this.onMsg(JSON.parse(e.data)));
       this.sse.addEventListener('state', e => { const s = JSON.parse(e.data); this.agentRunning = s.running; if (!s.running) this.lastToolName = ''; });
       this.sse.addEventListener('ask_state', e => { this.askActive = JSON.parse(e.data).active; });
@@ -1285,8 +963,6 @@ function kaptaan() {
     },
 
     openSettings() {
-      const p = this.activeProject();
-      this.edit = { name: p?.name||'', repo_url: p?.repo_url||'', github_token:'', error:'' };
       this.showSettings = true;
       this.refreshSettings();
     },
@@ -1296,66 +972,8 @@ function kaptaan() {
     },
 
     async refreshSettings() {
-      const [u, m, pl, d] = await Promise.all([
-        fetch('/api/usage').then(r=>r.json()),
-        this.api('/api/memories'),
-        this.api('/api/plans'),
-        this.api('/api/docs'),
-      ]);
-      this.usage = u;
-      this.memories = m.memories||[];
-      this.plans = pl.plans||[];
-      this.docs = d.docs||[];
-    },
-
-    async saveProject() {
-      this.edit.error = '';
-      const p = this.activeProject();
-      if (!p) return;
-      const body = { name: this.edit.name, repo_url: this.edit.repo_url };
-      if (this.edit.github_token) body.github_token = this.edit.github_token;
-      const r = await fetch('/api/projects/'+p.id, {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-      const j = await r.json();
-      if (!r.ok) { this.edit.error = j.error||'failed'; return; }
-      await this.loadProjects();
-    },
-
-    async deleteProject() {
-      if (!confirm('delete this project? all data will be lost.')) return;
-      const p = this.activeProject();
-      if (!p) return;
-      const r = await fetch('/api/projects/'+p.id, {method:'DELETE'});
-      const j = await r.json();
-      if (!r.ok) { this.edit.error = j.error||'failed'; return; }
-      this.showSettings = false;
-      this.activeProjectID = null;
-      await this.loadProjects();
-      if (this.projects.length) {
-        this.activeProjectID = this.projects[0].id;
-        localStorage.setItem('kaptaan_pid', String(this.activeProjectID));
-        this.connect();
-      } else {
-        this.newProjectOpen = true;
-      }
-    },
-
-    openNewProject() {
-      this.newProject = { name:'', repo_url:'', github_token:'', error:'' };
-      this.newProjectOpen = true;
-    },
-
-    async createProject() {
-      this.newProject.error = '';
-      const r = await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:this.newProject.name, repo_url:this.newProject.repo_url, github_token:this.newProject.github_token})});
-      const j = await r.json();
-      if (!r.ok) { this.newProject.error = j.error||'failed'; return; }
-      this.newProjectOpen = false;
-      await this.loadProjects();
-      if (j.project) {
-        this.activeProjectID = j.project.id;
-        localStorage.setItem('kaptaan_pid', String(this.activeProjectID));
-        this.connect();
-      }
+      const j = await this.api('/api/memories');
+      this.memories = j.memories||[];
     },
 
     async deleteMemory(key) {
@@ -1363,28 +981,18 @@ function kaptaan() {
       this.memories = this.memories.filter(m=>m.key!==key);
     },
 
-    async loadPlan(file) {
-      if (this.planView.filename === file) { this.planView = {filename:'', content:''}; return; }
-      const j = await this.api('/api/plans?file='+encodeURIComponent(file));
-      this.planView = { filename: file, content: j.content||'' };
-    },
-
-    async uploadDoc(ev) {
-      const f = ev.target.files[0]; if (!f) return;
-      const fd = new FormData(); fd.append('file', f);
-      await fetch('/api/docs', {method:'POST', headers:{'X-Project-ID': String(this.activeProjectID)}, body:fd});
-      const j = await this.api('/api/docs');
-      this.docs = j.docs||[];
-      ev.target.value = '';
-    },
-
-    async deleteDoc(id) {
-      await this.api('/api/docs/'+id, {method:'DELETE'});
-      this.docs = this.docs.filter(d=>d.id!==id);
+    async checkCredits() {
+      this.credits = { loading: true, error: '', data: null };
+      const j = await fetch('/api/credits').then(r=>r.json()).catch(()=>({error:'network error'}));
+      if (j.error) {
+        this.credits = { loading: false, error: j.error, data: null };
+        return;
+      }
+      this.credits = { loading: false, error: '', data: j };
     },
 
     api(path, opts={}) {
-      const headers = Object.assign({'Content-Type':'application/json','X-Project-ID': String(this.activeProjectID||'')}, opts.headers||{});
+      const headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{});
       return fetch(path, Object.assign({}, opts, {headers})).then(r=>r.json()).catch(()=>({}));
     },
   };

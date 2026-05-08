@@ -1,6 +1,5 @@
-// Package web hosts the HTTP API + embedded UI. Stateless: the active
-// project is sent on every request via the X-Project-ID header (or ?project=
-// query param). No global "active project" pointer.
+// Package web hosts the HTTP API + embedded UI. Single-project: all requests
+// operate on fixedProjectID = 1. No project switching or selection needed.
 package web
 
 import (
@@ -11,13 +10,15 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strconv"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/cto-agent/cto-agent/internal/db"
 )
+
+const fixedProjectID = 1
 
 // Agent is the surface the web layer needs.
 type Agent interface {
@@ -26,7 +27,7 @@ type Agent interface {
 	ResetConversation(projectID int)
 }
 
-// ─── SSE hub (per-project) ─────────────────────────────────────────────────
+// ─── SSE hub ───────────────────────────────────────────────────────────────
 
 type sseClient struct {
 	projectID int
@@ -66,7 +67,7 @@ func (h *sseHub) broadcast(projectID int, payload string) {
 	}
 }
 
-// ─── Pending ask state (per-project) ───────────────────────────────────────
+// ─── Pending ask state ─────────────────────────────────────────────────────
 
 type pendingAsk struct {
 	question string
@@ -76,18 +77,16 @@ type pendingAsk struct {
 
 // ─── Server ────────────────────────────────────────────────────────────────
 
-// Server is the embedded web UI + JSON API.
 type Server struct {
 	db    *db.DB
 	agent Agent
 	hub   *sseHub
 
 	mu      sync.Mutex
-	pending map[int]*pendingAsk // projectID → in-flight ask
+	pending map[int]*pendingAsk
 	motd    string
 }
 
-// New creates a Server (does not listen yet).
 func New(database *db.DB) *Server {
 	return &Server{
 		db:      database,
@@ -96,10 +95,8 @@ func New(database *db.DB) *Server {
 	}
 }
 
-// SetAgent wires the agent post-construction (breaks init cycle).
 func (s *Server) SetAgent(a Agent) { s.agent = a }
 
-// SetMOTD sets a one-shot message pushed to each new SSE client.
 func (s *Server) SetMOTD(msg string) {
 	s.mu.Lock()
 	s.motd = msg
@@ -108,7 +105,6 @@ func (s *Server) SetMOTD(msg string) {
 
 // ─── Outbound hooks ────────────────────────────────────────────────────────
 
-// SendToProject broadcasts a markdown message to one project's clients.
 func (s *Server) SendToProject(projectID int, text string) {
 	payload := map[string]string{
 		"type": "message",
@@ -120,7 +116,6 @@ func (s *Server) SendToProject(projectID int, text string) {
 	log.Printf("[web] send → p%d: %s", projectID, trunc(text, 80))
 }
 
-// AskProject blocks until the project's user replies (or times out / cancels).
 func (s *Server) AskProject(projectID int, question string) string {
 	pa := &pendingAsk{
 		question: question,
@@ -143,7 +138,6 @@ func (s *Server) AskProject(projectID int, question string) string {
 		s.broadcastAskState(projectID)
 	}()
 
-	// Push as a chat message AND surface ask_active for the composer.
 	payload, _ := json.Marshal(map[string]string{
 		"type": "ask", "text": question, "ts": time.Now().Format("15:04:05"),
 	})
@@ -161,7 +155,6 @@ func (s *Server) AskProject(projectID int, question string) string {
 	}
 }
 
-// NotifyAgentState pushes a state event for one project.
 func (s *Server) NotifyAgentState(projectID int) {
 	if s.agent == nil {
 		return
@@ -188,9 +181,8 @@ func (s *Server) broadcastAskState(projectID int) {
 	s.hub.broadcast(projectID, "event: ask_state\ndata: "+string(data)+"\n\n")
 }
 
-// ─── HTTP plumbing ─────────────────────────────────────────────────────────
+// ─── HTTP routing ──────────────────────────────────────────────────────────
 
-// Start registers routes and serves on :5000 until ctx is cancelled.
 func (s *Server) Start(ctx context.Context) {
 	mux := http.NewServeMux()
 
@@ -203,14 +195,9 @@ func (s *Server) Start(ctx context.Context) {
 	mux.HandleFunc("/events", s.requireAuth(s.handleSSE))
 	mux.HandleFunc("/api/chat", s.requireAuth(s.handleChat))
 	mux.HandleFunc("/api/reply", s.requireAuth(s.handleReply))
-	mux.HandleFunc("/api/usage", s.requireAuth(s.handleUsage))
-	mux.HandleFunc("/api/projects", s.requireAuth(s.handleProjects))
-	mux.HandleFunc("/api/projects/", s.requireAuth(s.handleProjectByID))
-	mux.HandleFunc("/api/docs", s.requireAuth(s.handleDocs))
-	mux.HandleFunc("/api/docs/", s.requireAuth(s.handleDocByID))
 	mux.HandleFunc("/api/memories", s.requireAuth(s.handleMemories))
-	mux.HandleFunc("/api/plans", s.requireAuth(s.handlePlans))
 	mux.HandleFunc("/api/conversation/clear", s.requireAuth(s.handleClearConvo))
+	mux.HandleFunc("/api/credits", s.requireAuth(s.handleCredits))
 
 	srv := &http.Server{Addr: "0.0.0.0:5000", Handler: mux}
 	go func() {
@@ -232,34 +219,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, indexHTML)
 }
 
-// resolveProjectID reads X-Project-ID then ?project=. Validates against DB.
-// Returns 0 + an HTTP-status-friendly error message on failure.
-func (s *Server) resolveProjectID(r *http.Request) (int, error) {
-	v := r.Header.Get("X-Project-ID")
-	if v == "" {
-		v = r.URL.Query().Get("project")
-	}
-	if v == "" {
-		return 0, errors.New("missing project id (set X-Project-ID header or ?project=)")
-	}
-	id, err := strconv.Atoi(v)
-	if err != nil || id <= 0 {
-		return 0, fmt.Errorf("invalid project id %q", v)
-	}
-	if _, err := s.db.GetProjectByID(r.Context(), id); err != nil {
-		return 0, fmt.Errorf("project %d not found", id)
-	}
-	return id, nil
-}
-
 // ─── SSE ───────────────────────────────────────────────────────────────────
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
-	pid, err := s.resolveProjectID(r)
-	if err != nil {
-		jsonErr(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -270,17 +232,16 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	c := &sseClient{projectID: pid, ch: make(chan string, 64)}
+	c := &sseClient{projectID: fixedProjectID, ch: make(chan string, 64)}
 	s.hub.add(c)
 	defer s.hub.remove(c)
 
-	// Greet with current state.
 	if s.agent != nil {
-		data, _ := json.Marshal(map[string]bool{"running": s.agent.IsRunning(pid)})
+		data, _ := json.Marshal(map[string]bool{"running": s.agent.IsRunning(fixedProjectID)})
 		fmt.Fprintf(w, "event: state\ndata: %s\n\n", data)
 	}
 	s.mu.Lock()
-	pa := s.pending[pid]
+	pa := s.pending[fixedProjectID]
 	motd := s.motd
 	s.mu.Unlock()
 	if pa != nil {
@@ -318,11 +279,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	pid, err := s.resolveProjectID(r)
-	if err != nil {
-		jsonErr(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 256*1024))
 	var payload struct {
 		Text string `json:"text"`
@@ -336,19 +292,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "empty message", http.StatusBadRequest)
 		return
 	}
-	// Echo to feed.
 	echo, _ := json.Marshal(map[string]string{
 		"type": "user", "text": payload.Text, "ts": time.Now().Format("15:04:05"),
 	})
-	s.hub.broadcast(pid, "event: msg\ndata: "+string(echo)+"\n\n")
+	s.hub.broadcast(fixedProjectID, "event: msg\ndata: "+string(echo)+"\n\n")
 
 	if s.agent == nil {
 		jsonErr(w, "agent not configured", http.StatusServiceUnavailable)
 		return
 	}
 	go func(text string) {
-		if err := s.agent.HandleUserMessage(context.Background(), pid, text); err != nil {
-			s.SendToProject(pid, "❌ "+err.Error())
+		if err := s.agent.HandleUserMessage(context.Background(), fixedProjectID, text); err != nil {
+			s.SendToProject(fixedProjectID, "❌ "+err.Error())
 		}
 	}(payload.Text)
 	jsonOK(w, map[string]string{"ok": "queued"})
@@ -357,11 +312,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	pid, err := s.resolveProjectID(r)
-	if err != nil {
-		jsonErr(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 64*1024))
@@ -378,10 +328,10 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	pa := s.pending[pid]
+	pa := s.pending[fixedProjectID]
 	s.mu.Unlock()
 	if pa == nil {
-		jsonErr(w, "no pending question for this project", http.StatusBadRequest)
+		jsonErr(w, "no pending question", http.StatusBadRequest)
 		return
 	}
 	select {
@@ -389,7 +339,7 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		echo, _ := json.Marshal(map[string]string{
 			"type": "reply", "text": "You: " + payload.Text, "ts": time.Now().Format("15:04:05"),
 		})
-		s.hub.broadcast(pid, "event: msg\ndata: "+string(echo)+"\n\n")
+		s.hub.broadcast(fixedProjectID, "event: msg\ndata: "+string(echo)+"\n\n")
 		jsonOK(w, map[string]string{"ok": "sent"})
 	default:
 		jsonErr(w, "reply channel full", http.StatusConflict)
@@ -401,27 +351,44 @@ func (s *Server) handleClearConvo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	pid, err := s.resolveProjectID(r)
-	if err != nil {
-		jsonErr(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 	if s.agent != nil {
-		s.agent.ResetConversation(pid)
+		s.agent.ResetConversation(fixedProjectID)
 	}
-	s.SendToProject(pid, "🧹 Conversation cleared.")
+	s.SendToProject(fixedProjectID, "🧹 Conversation cleared.")
 	jsonOK(w, map[string]string{"ok": "cleared"})
 }
 
-// ─── Usage ─────────────────────────────────────────────────────────────────
+// ─── Credits ───────────────────────────────────────────────────────────────
 
-func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
-	all, _ := s.db.GetUsageSummary(r.Context())
-	today, _ := s.db.GetUsageToday(r.Context())
-	jsonOK(w, map[string]interface{}{"all": all, "today": today})
+func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	key := os.Getenv("DEEPSEEK_API_KEY")
+	if key == "" {
+		jsonErr(w, "DEEPSEEK_API_KEY not configured", http.StatusServiceUnavailable)
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), "GET", "https://api.deepseek.com/user/balance", nil)
+	if err != nil {
+		jsonErr(w, "request error", http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		jsonErr(w, "deepseek api error: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(data)
 }
 
-// ─── helpers ───────────────────────────────────────────────────────────────
+// ─── Helpers ───────────────────────────────────────────────────────────────
 
 func jsonOK(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
