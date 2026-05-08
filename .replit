@@ -42,4 +42,3 @@ build = ["bash", "-c", "GONOSUMDB='*' go build -o kaptaan ./cmd/kaptaan"]
 [userenv]
 
 [userenv.shared]
-E2B_API_KEY = "e2b_6641e3470dbcc259a77f44122ee777136b29018b"

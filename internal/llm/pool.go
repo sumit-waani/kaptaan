@@ -83,11 +83,6 @@ func (p *Pool) Chat(ctx context.Context, messages []Message, tools []Tool) (*Res
         return p.callWithRetry(ctx, messages, tools, false)
 }
 
-// ChatJSON sends messages requesting a JSON-object response.
-func (p *Pool) ChatJSON(ctx context.Context, messages []Message) (*Response, error) {
-        return p.callWithRetry(ctx, messages, nil, true)
-}
-
 // callWithRetry handles cooldown checks + exponential backoff over transient errors.
 func (p *Pool) callWithRetry(ctx context.Context, messages []Message, tools []Tool, jsonMode bool) (*Response, error) {
         // Honor any active cooldown first (set by previous 429/auth/etc).
@@ -280,22 +275,6 @@ func retryAfterCooldown(headers http.Header, maxCap time.Duration) time.Duration
 
 // ActiveModel returns the model name currently in use.
 func (p *Pool) ActiveModel() string { return deepseekModel }
-
-// StatusReport returns a one-line human-readable status of the provider.
-func (p *Pool) StatusReport() string {
-        p.mu.Lock()
-        cd := p.cooldown
-        failures := p.failures
-        p.mu.Unlock()
-
-        now := time.Now()
-        if now.After(cd) {
-                return fmt.Sprintf("LLM Provider:\n  ✅ deepseek (%s) [paid]\n", deepseekModel)
-        }
-        remaining := time.Until(cd).Round(time.Second)
-        return fmt.Sprintf("LLM Provider:\n  ❌ deepseek (%s) [paid] — cooldown %s, failures: %d\n",
-                deepseekModel, remaining, failures)
-}
 
 func truncate(s string, n int) string {
         if len(s) <= n {
