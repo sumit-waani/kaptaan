@@ -17,6 +17,7 @@ import (
         "mime/multipart"
         "net/http"
         "net/url"
+        "strings"
         "time"
 )
 
@@ -54,6 +55,7 @@ func Create(ctx context.Context, apiKey, template string, timeoutSecs int) (*San
         body, _ := json.Marshal(map[string]any{
                 "templateID": template,
                 "timeout":    timeoutSecs,
+                "lifecycle":  map[string]any{"onTimeout": "pause"},
         })
         req, _ := http.NewRequestWithContext(ctx, http.MethodPost, apiBase+"/sandboxes", bytes.NewReader(body))
         req.Header.Set("X-API-Key", apiKey)
@@ -270,6 +272,59 @@ func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
                 return nil, fmt.Errorf("read %s: %s: %s", path, res.Status, string(b))
         }
         return io.ReadAll(res.Body)
+}
+
+// Connect resumes a paused sandbox by ID and returns a usable handle.
+// ref is "sandboxID:clientID" as stored by the agent in DB.
+func Connect(ctx context.Context, apiKey, ref string) (*Sandbox, error) {
+        if apiKey == "" {
+                return nil, fmt.Errorf("E2B_API_KEY is empty")
+        }
+        parts := strings.SplitN(ref, ":", 2)
+        sandboxID := parts[0]
+        clientID := ""
+        if len(parts) == 2 {
+                clientID = parts[1]
+        }
+
+        req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+                apiBase+"/sandboxes/"+sandboxID+"/resume", nil)
+        req.Header.Set("X-API-Key", apiKey)
+        cl := &http.Client{Timeout: 30 * time.Second}
+        res, err := cl.Do(req)
+        if err != nil {
+                return nil, err
+        }
+        defer res.Body.Close()
+        if res.StatusCode/100 != 2 {
+                b, _ := io.ReadAll(res.Body)
+                return nil, fmt.Errorf("resume sandbox: %s: %s", res.Status, string(b))
+        }
+
+        sb := &Sandbox{apiKey: apiKey, ID: sandboxID, ClientID: clientID}
+        _ = json.NewDecoder(res.Body).Decode(sb)
+        if sb.ID == "" {
+                sb.ID = sandboxID
+        }
+        if sb.ClientID == "" {
+                sb.ClientID = clientID
+        }
+
+        deadline := time.Now().Add(20 * time.Second)
+        for time.Now().Before(deadline) {
+                hctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+                hreq, _ := http.NewRequestWithContext(hctx, http.MethodGet, sb.host()+"/health", nil)
+                r, herr := http.DefaultClient.Do(hreq)
+                cancel()
+                if herr == nil {
+                        r.Body.Close()
+                        if r.StatusCode == 204 || r.StatusCode == 200 {
+                                return sb, nil
+                        }
+                }
+                time.Sleep(500 * time.Millisecond)
+        }
+        return sb, nil
 }
 
 func makeFrame(payload []byte) []byte {

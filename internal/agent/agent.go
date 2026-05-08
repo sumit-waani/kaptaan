@@ -5,20 +5,19 @@
 package agent
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"log"
-	"os"
-	"strings"
-	"sync"
-	"time"
+        "context"
+        "encoding/json"
+        "errors"
+        "fmt"
+        "log"
+        "os"
+        "strings"
+        "sync"
 
-	"github.com/cto-agent/cto-agent/internal/db"
-	"github.com/cto-agent/cto-agent/internal/llm"
-	"github.com/cto-agent/cto-agent/internal/sandbox"
-	"github.com/cto-agent/cto-agent/internal/tools"
+        "github.com/cto-agent/cto-agent/internal/db"
+        "github.com/cto-agent/cto-agent/internal/llm"
+        "github.com/cto-agent/cto-agent/internal/sandbox"
+        "github.com/cto-agent/cto-agent/internal/tools"
 )
 
 // fixedProjectID is used as the key for memories, conversations, and sandbox
@@ -27,623 +26,585 @@ const fixedProjectID = 1
 
 // Hooks are the small set of UI callbacks the agent invokes.
 type Hooks struct {
-	Send        func(projectID int, text string)
-	Ask         func(projectID int, question string) string
-	NotifyState func(projectID int)
+        Send        func(projectID int, text string)
+        Ask         func(projectID int, question string) string
+        NotifyState func(projectID int)
 }
 
 // projectSandbox is the live E2B sandbox, shared across all turns until
 // the agent explicitly calls reset_sandbox.
 type projectSandbox struct {
-	runtime tools.Runtime
-	branch  string
+        runtime tools.Runtime
+        branch  string
 }
 
 // Agent owns conversation state and serialises calls.
 type Agent struct {
-	db     *db.DB
-	pool   *llm.Pool
-	hooks  Hooks
-	e2bKey string
+        db     *db.DB
+        pool   *llm.Pool
+        hooks  Hooks
+        e2bKey string
 
-	mu      sync.Mutex
-	convo   map[int][]llm.Message
-	running map[int]bool
+        mu      sync.Mutex
+        convo   map[int][]llm.Message
+        running map[int]bool
 
-	sbMu      sync.Mutex
-	sandboxes map[int]*projectSandbox
+        sbMu      sync.Mutex
+        sandboxes map[int]*projectSandbox
 }
 
 func New(database *db.DB, pool *llm.Pool, e2bKey string, hooks Hooks) *Agent {
-	return &Agent{
-		db:        database,
-		pool:      pool,
-		hooks:     hooks,
-		e2bKey:    e2bKey,
-		convo:     make(map[int][]llm.Message),
-		running:   make(map[int]bool),
-		sandboxes: make(map[int]*projectSandbox),
-	}
+        return &Agent{
+                db:        database,
+                pool:      pool,
+                hooks:     hooks,
+                e2bKey:    e2bKey,
+                convo:     make(map[int][]llm.Message),
+                running:   make(map[int]bool),
+                sandboxes: make(map[int]*projectSandbox),
+        }
 }
 
 func (a *Agent) IsRunning(projectID int) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.running[projectID]
+        a.mu.Lock()
+        defer a.mu.Unlock()
+        return a.running[projectID]
 }
 
 func (a *Agent) ResetConversation(projectID int) {
-	a.mu.Lock()
-	delete(a.convo, projectID)
-	a.mu.Unlock()
+        a.mu.Lock()
+        delete(a.convo, projectID)
+        a.mu.Unlock()
 }
 
 // HandleUserMessage processes one user turn end-to-end. Blocking.
 func (a *Agent) HandleUserMessage(ctx context.Context, projectID int, text string) error {
-	a.mu.Lock()
-	if a.running[projectID] {
-		a.mu.Unlock()
-		return errors.New("agent is already working on this project")
-	}
-	a.running[projectID] = true
-	a.mu.Unlock()
+        a.mu.Lock()
+        if a.running[projectID] {
+                a.mu.Unlock()
+                return errors.New("agent is already working on this project")
+        }
+        a.running[projectID] = true
+        a.mu.Unlock()
 
-	defer func() {
-		a.mu.Lock()
-		a.running[projectID] = false
-		a.mu.Unlock()
-		if a.hooks.NotifyState != nil {
-			a.hooks.NotifyState(projectID)
-		}
-	}()
-	if a.hooks.NotifyState != nil {
-		a.hooks.NotifyState(projectID)
-	}
+        defer func() {
+                a.mu.Lock()
+                a.running[projectID] = false
+                a.mu.Unlock()
+                if a.hooks.NotifyState != nil {
+                        a.hooks.NotifyState(projectID)
+                }
+        }()
+        if a.hooks.NotifyState != nil {
+                a.hooks.NotifyState(projectID)
+        }
 
-	turn := newTurn(a, projectID)
-	turn.appendUser(text)
+        turn := newTurn(a, projectID)
+        turn.appendUser(text)
 
-	const maxIterations = 200
-	for i := 0; i < maxIterations; i++ {
-		resp, err := a.pool.Chat(ctx, turn.messages(), turn.toolDefs())
-		if err != nil {
-			a.hooks.Send(projectID, "❌ LLM error: "+err.Error())
-			return err
-		}
-		choice := resp.Choices[0].Message
-		turn.appendAssistant(choice)
+        const maxIterations = 200
+        for i := 0; i < maxIterations; i++ {
+                resp, err := a.pool.Chat(ctx, turn.messages(), turn.toolDefs())
+                if err != nil {
+                        a.hooks.Send(projectID, "❌ LLM error: "+err.Error())
+                        return err
+                }
+                choice := resp.Choices[0].Message
+                turn.appendAssistant(choice)
 
-		if len(choice.ToolCalls) == 0 {
-			if strings.TrimSpace(choice.Content) != "" {
-				a.hooks.Send(projectID, choice.Content)
-			}
-			a.commitTurn(projectID, turn)
-			return nil
-		}
+                if len(choice.ToolCalls) == 0 {
+                        if strings.TrimSpace(choice.Content) != "" {
+                                a.hooks.Send(projectID, choice.Content)
+                        }
+                        a.commitTurn(projectID, turn)
+                        return nil
+                }
 
-		if pre := strings.TrimSpace(choice.Content); pre != "" {
-			a.hooks.Send(projectID, pre)
-		}
+                if pre := strings.TrimSpace(choice.Content); pre != "" {
+                        a.hooks.Send(projectID, pre)
+                }
 
-		for _, call := range choice.ToolCalls {
-			out := turn.dispatch(ctx, call)
-			turn.appendToolResult(call.ID, out)
-		}
-	}
-	a.hooks.Send(projectID, "⚠️ Reached the iteration limit for this turn. Send another message to continue.")
-	a.commitTurn(projectID, turn)
-	return nil
+                for _, call := range choice.ToolCalls {
+                        out := turn.dispatch(ctx, call)
+                        turn.appendToolResult(call.ID, out)
+                }
+        }
+        a.hooks.Send(projectID, "⚠️ Reached the iteration limit for this turn. Send another message to continue.")
+        a.commitTurn(projectID, turn)
+        return nil
 }
 
 func (a *Agent) commitTurn(projectID int, t *turn) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	msgs := t.local
-	if len(msgs) > 80 {
-		msgs = append([]llm.Message{msgs[0]}, msgs[len(msgs)-79:]...)
-	}
-	a.convo[projectID] = msgs
+        a.mu.Lock()
+        defer a.mu.Unlock()
+        msgs := t.local
+        if len(msgs) > 80 {
+                msgs = append([]llm.Message{msgs[0]}, msgs[len(msgs)-79:]...)
+        }
+        a.convo[projectID] = msgs
 }
 
 func (a *Agent) loadConvo(projectID int) []llm.Message {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	src := a.convo[projectID]
-	dst := make([]llm.Message, len(src))
-	copy(dst, src)
-	return dst
+        a.mu.Lock()
+        defer a.mu.Unlock()
+        src := a.convo[projectID]
+        dst := make([]llm.Message, len(src))
+        copy(dst, src)
+        return dst
 }
 
 // ─── Per-turn state ────────────────────────────────────────────────────────
 
 type turn struct {
-	a         *Agent
-	projectID int
-	local     []llm.Message
+        a         *Agent
+        projectID int
+        local     []llm.Message
 }
 
 func newTurn(a *Agent, projectID int) *turn {
-	t := &turn{a: a, projectID: projectID}
-	prior := a.loadConvo(projectID)
-	if len(prior) == 0 {
-		t.local = []llm.Message{{Role: "system", Content: t.systemPrompt()}}
-	} else {
-		prior[0] = llm.Message{Role: "system", Content: t.systemPrompt()}
-		t.local = prior
-	}
-	return t
+        t := &turn{a: a, projectID: projectID}
+        prior := a.loadConvo(projectID)
+        if len(prior) == 0 {
+                t.local = []llm.Message{{Role: "system", Content: t.systemPrompt()}}
+        } else {
+                prior[0] = llm.Message{Role: "system", Content: t.systemPrompt()}
+                t.local = prior
+        }
+        return t
 }
 
 func (t *turn) messages() []llm.Message { return t.local }
 
 func (t *turn) appendUser(text string) {
-	t.local = append(t.local, llm.Message{Role: "user", Content: text})
+        t.local = append(t.local, llm.Message{Role: "user", Content: text})
 }
 
 func (t *turn) appendAssistant(m llm.Message) {
-	m.Role = "assistant"
-	t.local = append(t.local, m)
+        m.Role = "assistant"
+        t.local = append(t.local, m)
 }
 
 func (t *turn) appendToolResult(id, output string) {
-	if len(output) > 16000 {
-		output = output[:16000] + "\n…[truncated]"
-	}
-	t.local = append(t.local, llm.Message{
-		Role:       "tool",
-		ToolCallID: id,
-		Content:    output,
-	})
+        if len(output) > 16000 {
+                output = output[:16000] + "\n…[truncated]"
+        }
+        t.local = append(t.local, llm.Message{
+                Role:       "tool",
+                ToolCallID: id,
+                Content:    output,
+        })
 }
 
-// ensureSandbox returns the persistent sandbox, creating it on first call.
+// ensureSandbox returns the persistent sandbox. On first call it tries to
+// resume a previously paused sandbox (ID stored in DB), falling back to
+// creating a fresh one if none exists or the saved ID is stale.
 func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime, error) {
-	a.sbMu.Lock()
-	ps := a.sandboxes[projectID]
-	a.sbMu.Unlock()
-	if ps != nil {
-		return ps.runtime, nil
-	}
+        a.sbMu.Lock()
+        ps := a.sandboxes[projectID]
+        a.sbMu.Unlock()
+        if ps != nil {
+                return ps.runtime, nil
+        }
 
-	if a.e2bKey == "" {
-		return nil, errors.New("E2B_API_KEY is not configured — sandbox tools are unavailable")
-	}
+        if a.e2bKey == "" {
+                return nil, errors.New("E2B_API_KEY is not configured — sandbox tools are unavailable")
+        }
 
-	a.hooks.Send(projectID, "🛠 spinning up sandbox…")
-	sb, err := sandbox.Create(ctx, a.e2bKey, "base", 3600)
-	if err != nil {
-		return nil, fmt.Errorf("sandbox create: %w", err)
-	}
-	runtime := &tools.SandboxRuntime{
-		Sandbox: sb,
-		Cwd:     "/home/user/workspace",
-		Env: map[string]string{
-			"HOME": "/home/user",
-			"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		},
-	}
+        // Try to reconnect to a previously saved (paused) sandbox.
+        if mem, err := a.db.GetMemory(ctx, projectID, "_sandbox_id"); err == nil && mem.Content != "" {
+                a.hooks.Send(projectID, "🔄 reconnecting to saved sandbox…")
+                sb, err := sandbox.Connect(ctx, a.e2bKey, mem.Content)
+                if err == nil {
+                        runtime := &tools.SandboxRuntime{
+                                Sandbox: sb,
+                                Cwd:     "/home/user/workspace",
+                                Env: map[string]string{
+                                        "HOME": "/home/user",
+                                        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                                },
+                        }
+                        // Sync with latest from origin/main on every reconnect.
+                        if os.Getenv("GITHUB_TOKEN") != "" {
+                                if r := runtime.Shell(ctx, "cd /home/user/workspace && git fetch origin && git merge origin/main --no-edit", 60); r.IsErr {
+                                        log.Printf("[agent] git sync failed: %s", r.Output)
+                                }
+                        }
+                        ps = &projectSandbox{runtime: runtime, branch: "kaptaan"}
+                        a.sbMu.Lock()
+                        a.sandboxes[projectID] = ps
+                        a.sbMu.Unlock()
+                        a.hooks.Send(projectID, "✅ sandbox reconnected, branch: `kaptaan`")
+                        return runtime, nil
+                }
+                // Saved ID is stale — fall through to create a fresh sandbox.
+                log.Printf("[agent] sandbox reconnect failed (%v) — creating new one", err)
+                _ = a.db.DeleteMemory(ctx, projectID, "_sandbox_id")
+        }
 
-	if r := runtime.Shell(ctx, "mkdir -p /home/user/workspace", 30); r.IsErr {
-		log.Printf("[agent] mkdir workspace: %s", r.Output)
-	}
+        a.hooks.Send(projectID, "🛠 spinning up sandbox…")
+        sb, err := sandbox.Create(ctx, a.e2bKey, "base", 3600)
+        if err != nil {
+                return nil, fmt.Errorf("sandbox create: %w", err)
+        }
 
-	repoURL := normalizeRepoURL(os.Getenv("REPO_URL"))
-	githubToken := os.Getenv("GITHUB_TOKEN")
+        // Persist sandbox reference for future reconnects.
+        sandboxRef := sb.ID + ":" + sb.ClientID
+        if err := a.db.PutMemory(ctx, projectID, "_sandbox_id", sandboxRef); err != nil {
+                log.Printf("[agent] failed to store sandbox id: %v", err)
+        }
 
-	var branch string
-	if repoURL != "" && githubToken != "" {
-		cloneURL := injectToken(repoURL, githubToken)
-		cmd := fmt.Sprintf(
-			"cd /home/user && rm -rf workspace && git clone %s workspace"+
-				" && cd workspace"+
-				" && git config user.email kaptaan@local"+
-				" && git config user.name Kaptaan",
-			shellQuote(cloneURL),
-		)
-		if r := runtime.Shell(ctx, cmd, 180); r.IsErr {
-			log.Printf("[agent] git clone failed: %s", r.Output)
-			a.hooks.Send(projectID, "⚠️ git clone failed:\n```\n"+truncate(r.Output, 800)+"\n```\nProceeding with empty workspace.")
-		} else {
-			branch = "kaptaan/" + time.Now().UTC().Format("20060102-150405")
-			if r := runtime.Shell(ctx, "cd /home/user/workspace && git checkout -b "+shellQuote(branch), 30); r.IsErr {
-				log.Printf("[agent] branch create failed: %s", r.Output)
-				branch = ""
-			} else {
-				a.hooks.Send(projectID, "✅ repo cloned, working branch: `"+branch+"`")
-			}
-		}
-	}
+        runtime := &tools.SandboxRuntime{
+                Sandbox: sb,
+                Cwd:     "/home/user/workspace",
+                Env: map[string]string{
+                        "HOME": "/home/user",
+                        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                },
+        }
 
-	ps = &projectSandbox{runtime: runtime, branch: branch}
-	a.sbMu.Lock()
-	a.sandboxes[projectID] = ps
-	a.sbMu.Unlock()
-	return runtime, nil
+        if r := runtime.Shell(ctx, "mkdir -p /home/user/workspace", 30); r.IsErr {
+                log.Printf("[agent] mkdir workspace: %s", r.Output)
+        }
+
+        repoURL := normalizeRepoURL(os.Getenv("REPO_URL"))
+        githubToken := os.Getenv("GITHUB_TOKEN")
+
+        if repoURL != "" && githubToken != "" {
+                cloneURL := injectToken(repoURL, githubToken)
+                cmd := fmt.Sprintf(
+                        "cd /home/user && rm -rf workspace && git clone %s workspace"+
+                                " && cd workspace"+
+                                " && git config user.email kaptaan@local"+
+                                " && git config user.name Kaptaan"+
+                                " && (git checkout kaptaan 2>/dev/null || git checkout -b kaptaan)",
+                        shellQuote(cloneURL),
+                )
+                if r := runtime.Shell(ctx, cmd, 180); r.IsErr {
+                        log.Printf("[agent] git clone failed: %s", r.Output)
+                        a.hooks.Send(projectID, "⚠️ git clone failed:\n```\n"+truncate(r.Output, 800)+"\n```\nProceeding with empty workspace.")
+                } else {
+                        a.hooks.Send(projectID, "✅ repo cloned, branch: `kaptaan`")
+                }
+        }
+
+        ps = &projectSandbox{runtime: runtime, branch: "kaptaan"}
+        a.sbMu.Lock()
+        a.sandboxes[projectID] = ps
+        a.sbMu.Unlock()
+        return runtime, nil
 }
 
 func (a *Agent) resetSandbox(ctx context.Context, projectID int) {
-	a.sbMu.Lock()
-	ps := a.sandboxes[projectID]
-	delete(a.sandboxes, projectID)
-	a.sbMu.Unlock()
-	if ps != nil {
-		_ = ps.runtime.Close(ctx)
-	}
+        a.sbMu.Lock()
+        ps := a.sandboxes[projectID]
+        delete(a.sandboxes, projectID)
+        a.sbMu.Unlock()
+        if ps != nil {
+                _ = ps.runtime.Close(ctx)
+        }
+        // Remove saved sandbox ID so next ensureSandbox creates a fresh one.
+        _ = a.db.DeleteMemory(ctx, projectID, "_sandbox_id")
 }
 
 // systemPrompt is rebuilt each turn so memory changes are always current.
 func (t *turn) systemPrompt() string {
-	mems, _ := t.a.db.ListMemories(context.Background(), t.projectID)
+        mems, _ := t.a.db.ListMemories(context.Background(), t.projectID)
 
-	repoURL := normalizeRepoURL(os.Getenv("REPO_URL"))
-	githubToken := os.Getenv("GITHUB_TOKEN")
+        repoURL := normalizeRepoURL(os.Getenv("REPO_URL"))
+        githubToken := os.Getenv("GITHUB_TOKEN")
 
-	var b strings.Builder
-	b.WriteString("You are **Kaptaan**, an autonomous coding agent.\n\n")
+        var b strings.Builder
+        b.WriteString("You are **Kaptaan**, an autonomous coding agent.\n\n")
 
-	b.WriteString("## Active project\n")
-	if repoURL != "" {
-		fmt.Fprintf(&b, "- repo: %s\n", repoURL)
-	} else {
-		b.WriteString("- repo: (none — set REPO_URL env var)\n")
-	}
-	if githubToken == "" {
-		b.WriteString("- github_token: (missing — PR ops disabled)\n")
-	}
-	b.WriteString("- workdir in sandbox: /home/user/workspace\n\n")
+        b.WriteString("## Active project\n")
+        if repoURL != "" {
+                fmt.Fprintf(&b, "- repo: %s\n", repoURL)
+        } else {
+                b.WriteString("- repo: (none — set REPO_URL env var)\n")
+        }
+        if githubToken == "" {
+                b.WriteString("- github_token: (missing — PR ops disabled)\n")
+        }
+        b.WriteString("- workdir in sandbox: /home/user/workspace\n\n")
 
-	b.WriteString("## How you work\n")
-	b.WriteString("When given a task:\n")
-	b.WriteString("1. Write a simple todo list to scratchpad.md using `write_scratchpad`\n")
-	b.WriteString("2. Execute todos one by one\n")
-	b.WriteString("3. Check off each completed item in scratchpad using `write_scratchpad`\n")
-	b.WriteString("4. After all todos are done: verify output against the original instructions\n")
-	b.WriteString("5. Push PR with `open_pr`, call `reset_sandbox` to clean up\n")
-	b.WriteString("6. Write a short summary to the user with `send`\n\n")
-	b.WriteString("- Do NOT create plan files. Use scratchpad.md as your working memory.\n")
-	b.WriteString("- For docs in the repo: use `read_file` and `grep_repo` directly on the /docs folder.\n")
-	b.WriteString("- Use `send` to give progress updates. Use `ask` ONLY when genuinely blocked.\n")
-	b.WriteString("- Use `write_memory` to persist long-lived facts (architecture decisions, conventions).\n\n")
+        b.WriteString("## How you work\n")
+        b.WriteString("When given a task:\n")
+        b.WriteString("1. Write a simple todo list to scratchpad.md using `write_scratchpad`\n")
+        b.WriteString("2. Execute todos one by one\n")
+        b.WriteString("3. Check off each completed item in scratchpad using `write_scratchpad`\n")
+        b.WriteString("4. After all todos are done: verify output against the original instructions\n")
+        b.WriteString("5. Push branch with `shell` (`git push -u origin kaptaan`), call `reset_sandbox` to clean up\n")
+        b.WriteString("6. Write a short summary to the user with `send`\n\n")
+        b.WriteString("- Do NOT create plan files. Use scratchpad.md as your working memory.\n")
+        b.WriteString("- For docs in the repo: use `read_file` and `grep_repo` directly on the /docs folder.\n")
+        b.WriteString("- Use `send` to give progress updates. Use `ask` ONLY when genuinely blocked.\n")
+        b.WriteString("- Use `write_memory` to persist long-lived facts (architecture decisions, conventions).\n\n")
 
-	b.WriteString("## Sandbox & git workflow\n")
-	b.WriteString("- The sandbox persists across all turns until you call `reset_sandbox`.\n")
-	b.WriteString("- On start, the repo is cloned and a branch `kaptaan/YYYYMMDD-HHMMss` is created.\n")
-	b.WriteString("- Commit frequently with `git_commit` after each meaningful chunk of work.\n")
-	b.WriteString("- When task is done: `open_pr` → `reset_sandbox`.\n")
-	b.WriteString("- Only merge with `merge_pr` after the user explicitly approves.\n\n")
+        b.WriteString("## Sandbox & git workflow\n")
+        b.WriteString("- The sandbox persists across turns (and across server restarts via pause/resume).\n")
+        b.WriteString("- Call `reset_sandbox` only when a task is fully done — it kills the sandbox.\n")
+        b.WriteString("- The working branch is always `kaptaan` (fixed — do not create other branches).\n")
+        b.WriteString("- Commit frequently with `git_commit` after each meaningful chunk of work.\n")
+        b.WriteString("- To publish work: use `shell` to run `git push -u origin kaptaan`.\n\n")
 
-	if len(mems) > 0 {
-		b.WriteString("## Stored memories\n")
-		for _, m := range mems {
-			fmt.Fprintf(&b, "- `%s` — %s\n", m.Key, truncate(m.Content, 120))
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
+        if len(mems) > 0 {
+                b.WriteString("## Stored memories\n")
+                for _, m := range mems {
+                        fmt.Fprintf(&b, "- `%s` — %s\n", m.Key, truncate(m.Content, 120))
+                }
+                b.WriteString("\n")
+        }
+        return b.String()
 }
 
 // dispatch executes one tool call and returns the textual result.
 func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
-	name := call.Function.Name
-	args := map[string]interface{}{}
-	if call.Function.Arguments != "" {
-		_ = json.Unmarshal([]byte(call.Function.Arguments), &args)
-	}
-	t.a.hooks.Send(t.projectID, fmt.Sprintf("`tool` **%s** %s", name, summariseArgs(args)))
+        name := call.Function.Name
+        args := map[string]interface{}{}
+        if call.Function.Arguments != "" {
+                _ = json.Unmarshal([]byte(call.Function.Arguments), &args)
+        }
+        t.a.hooks.Send(t.projectID, fmt.Sprintf("`tool` **%s** %s", name, summariseArgs(args)))
 
-	switch name {
-	case "send":
-		text := getStr(args, "text")
-		if text == "" {
-			return "ERROR: send requires `text`"
-		}
-		t.a.hooks.Send(t.projectID, text)
-		return "ok"
+        switch name {
+        case "send":
+                text := getStr(args, "text")
+                if text == "" {
+                        return "ERROR: send requires `text`"
+                }
+                t.a.hooks.Send(t.projectID, text)
+                return "ok"
 
-	case "ask":
-		q := getStr(args, "question")
-		if q == "" {
-			return "ERROR: ask requires `question`"
-		}
-		reply := t.a.hooks.Ask(t.projectID, q)
-		if reply == "" {
-			return "(no reply / cancelled)"
-		}
-		return "user replied: " + reply
+        case "ask":
+                q := getStr(args, "question")
+                if q == "" {
+                        return "ERROR: ask requires `question`"
+                }
+                reply := t.a.hooks.Ask(t.projectID, q)
+                if reply == "" {
+                        return "(no reply / cancelled)"
+                }
+                return "user replied: " + reply
 
-	case "write_scratchpad":
-		content := getStr(args, "content")
-		rt, err := t.a.ensureSandbox(ctx, t.projectID)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		r := rt.WriteFile(ctx, "/home/user/workspace/scratchpad.md", []byte(content))
-		return r.Output
+        case "write_scratchpad":
+                content := getStr(args, "content")
+                rt, err := t.a.ensureSandbox(ctx, t.projectID)
+                if err != nil {
+                        return "ERROR: " + err.Error()
+                }
+                r := rt.WriteFile(ctx, "/home/user/workspace/scratchpad.md", []byte(content))
+                return r.Output
 
-	case "read_scratchpad":
-		rt, err := t.a.ensureSandbox(ctx, t.projectID)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		r := rt.ReadFile(ctx, "/home/user/workspace/scratchpad.md")
-		return r.Output
+        case "read_scratchpad":
+                rt, err := t.a.ensureSandbox(ctx, t.projectID)
+                if err != nil {
+                        return "ERROR: " + err.Error()
+                }
+                r := rt.ReadFile(ctx, "/home/user/workspace/scratchpad.md")
+                return r.Output
 
-	case "list_memories":
-		ms, err := t.a.db.ListMemories(ctx, t.projectID)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		if len(ms) == 0 {
-			return "(no memories yet)"
-		}
-		var b strings.Builder
-		for _, m := range ms {
-			fmt.Fprintf(&b, "%s — %s\n", m.Key, truncate(m.Content, 200))
-		}
-		return b.String()
+        case "list_memories":
+                ms, err := t.a.db.ListMemories(ctx, t.projectID)
+                if err != nil {
+                        return "ERROR: " + err.Error()
+                }
+                if len(ms) == 0 {
+                        return "(no memories yet)"
+                }
+                var b strings.Builder
+                for _, m := range ms {
+                        fmt.Fprintf(&b, "%s — %s\n", m.Key, truncate(m.Content, 200))
+                }
+                return b.String()
 
-	case "read_memory":
-		key := getStr(args, "key")
-		m, err := t.a.db.GetMemory(ctx, t.projectID, key)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		return m.Content
+        case "read_memory":
+                key := getStr(args, "key")
+                m, err := t.a.db.GetMemory(ctx, t.projectID, key)
+                if err != nil {
+                        return "ERROR: " + err.Error()
+                }
+                return m.Content
 
-	case "write_memory":
-		key := getStr(args, "key")
-		val := getStr(args, "content")
-		if key == "" || val == "" {
-			return "ERROR: write_memory requires `key` and `content`"
-		}
-		if err := t.a.db.PutMemory(ctx, t.projectID, key, val); err != nil {
-			return "ERROR: " + err.Error()
-		}
-		return "stored memory " + key
+        case "write_memory":
+                key := getStr(args, "key")
+                val := getStr(args, "content")
+                if key == "" || val == "" {
+                        return "ERROR: write_memory requires `key` and `content`"
+                }
+                if err := t.a.db.PutMemory(ctx, t.projectID, key, val); err != nil {
+                        return "ERROR: " + err.Error()
+                }
+                return "stored memory " + key
 
-	case "delete_memory":
-		key := getStr(args, "key")
-		if err := t.a.db.DeleteMemory(ctx, t.projectID, key); err != nil {
-			return "ERROR: " + err.Error()
-		}
-		return "deleted memory " + key
+        case "delete_memory":
+                key := getStr(args, "key")
+                if err := t.a.db.DeleteMemory(ctx, t.projectID, key); err != nil {
+                        return "ERROR: " + err.Error()
+                }
+                return "deleted memory " + key
 
-	case "list_repo":
-		path := getStr(args, "path")
-		if path == "" {
-			path = "."
-		}
-		rt, err := t.a.ensureSandbox(ctx, t.projectID)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		r := rt.Shell(ctx, "ls -la "+shellQuote(path), 30)
-		return r.Output
+        case "list_repo":
+                path := getStr(args, "path")
+                if path == "" {
+                        path = "."
+                }
+                rt, err := t.a.ensureSandbox(ctx, t.projectID)
+                if err != nil {
+                        return "ERROR: " + err.Error()
+                }
+                r := rt.Shell(ctx, "ls -la "+shellQuote(path), 30)
+                return r.Output
 
-	case "read_file":
-		path := getStr(args, "path")
-		if path == "" {
-			return "ERROR: read_file requires `path`"
-		}
-		rt, err := t.a.ensureSandbox(ctx, t.projectID)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		r := rt.ReadFile(ctx, path)
-		return r.Output
+        case "read_file":
+                path := getStr(args, "path")
+                if path == "" {
+                        return "ERROR: read_file requires `path`"
+                }
+                rt, err := t.a.ensureSandbox(ctx, t.projectID)
+                if err != nil {
+                        return "ERROR: " + err.Error()
+                }
+                r := rt.ReadFile(ctx, path)
+                return r.Output
 
-	case "grep_repo":
-		pattern := getStr(args, "pattern")
-		path := getStr(args, "path")
-		if pattern == "" {
-			return "ERROR: grep_repo requires `pattern`"
-		}
-		if path == "" {
-			path = "."
-		}
-		rt, err := t.a.ensureSandbox(ctx, t.projectID)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		r := rt.Shell(ctx, fmt.Sprintf("grep -rn --color=never %s %s | head -200", shellQuote(pattern), shellQuote(path)), 60)
-		return r.Output
+        case "grep_repo":
+                pattern := getStr(args, "pattern")
+                path := getStr(args, "path")
+                if pattern == "" {
+                        return "ERROR: grep_repo requires `pattern`"
+                }
+                if path == "" {
+                        path = "."
+                }
+                rt, err := t.a.ensureSandbox(ctx, t.projectID)
+                if err != nil {
+                        return "ERROR: " + err.Error()
+                }
+                r := rt.Shell(ctx, fmt.Sprintf("grep -rn --color=never %s %s | head -200", shellQuote(pattern), shellQuote(path)), 60)
+                return r.Output
 
-	case "write_file":
-		path := getStr(args, "path")
-		content := getStr(args, "content")
-		if path == "" {
-			return "ERROR: write_file requires `path`"
-		}
-		rt, err := t.a.ensureSandbox(ctx, t.projectID)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		r := rt.WriteFile(ctx, path, []byte(content))
-		return r.Output
+        case "write_file":
+                path := getStr(args, "path")
+                content := getStr(args, "content")
+                if path == "" {
+                        return "ERROR: write_file requires `path`"
+                }
+                rt, err := t.a.ensureSandbox(ctx, t.projectID)
+                if err != nil {
+                        return "ERROR: " + err.Error()
+                }
+                r := rt.WriteFile(ctx, path, []byte(content))
+                return r.Output
 
-	case "shell":
-		cmd := getStr(args, "cmd")
-		timeout := getInt(args, "timeout_secs", 60)
-		if cmd == "" {
-			return "ERROR: shell requires `cmd`"
-		}
-		rt, err := t.a.ensureSandbox(ctx, t.projectID)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		r := rt.Shell(ctx, cmd, timeout)
-		return r.Output
+        case "shell":
+                cmd := getStr(args, "cmd")
+                timeout := getInt(args, "timeout_secs", 60)
+                if cmd == "" {
+                        return "ERROR: shell requires `cmd`"
+                }
+                rt, err := t.a.ensureSandbox(ctx, t.projectID)
+                if err != nil {
+                        return "ERROR: " + err.Error()
+                }
+                r := rt.Shell(ctx, cmd, timeout)
+                return r.Output
 
-	case "git_commit":
-		msg := getStr(args, "message")
-		if msg == "" {
-			return "ERROR: git_commit requires `message`"
-		}
-		rt, err := t.a.ensureSandbox(ctx, t.projectID)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		r := rt.Shell(ctx, "cd /home/user/workspace && git add -A && git commit -m "+shellQuote(msg), 60)
-		return r.Output
+        case "git_commit":
+                msg := getStr(args, "message")
+                if msg == "" {
+                        return "ERROR: git_commit requires `message`"
+                }
+                rt, err := t.a.ensureSandbox(ctx, t.projectID)
+                if err != nil {
+                        return "ERROR: " + err.Error()
+                }
+                r := rt.Shell(ctx, "cd /home/user/workspace && git add -A && git commit -m "+shellQuote(msg), 60)
+                return r.Output
 
-	case "open_pr":
-		title := getStr(args, "title")
-		body := getStr(args, "body")
-		base := getStr(args, "base")
-		if base == "" {
-			base = "main"
-		}
-		if title == "" {
-			return "ERROR: open_pr requires `title`"
-		}
-		repoURL := normalizeRepoURL(os.Getenv("REPO_URL"))
-		githubToken := os.Getenv("GITHUB_TOKEN")
-		if githubToken == "" || repoURL == "" {
-			return "ERROR: REPO_URL or GITHUB_TOKEN env vars not configured"
-		}
-		t.a.sbMu.Lock()
-		ps := t.a.sandboxes[t.projectID]
-		t.a.sbMu.Unlock()
-		branch := ""
-		if ps != nil {
-			branch = ps.branch
-		}
-		if branch == "" {
-			rt, err := t.a.ensureSandbox(ctx, t.projectID)
-			if err != nil {
-				return "ERROR: " + err.Error()
-			}
-			r := rt.Shell(ctx, "cd /home/user/workspace && git branch --show-current", 15)
-			branch = strings.TrimSpace(r.Output)
-		}
-		if branch == "" {
-			return "ERROR: could not determine current branch"
-		}
-		rt, err := t.a.ensureSandbox(ctx, t.projectID)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		push := rt.Shell(ctx, "cd /home/user/workspace && git push -u origin "+shellQuote(branch), 120)
-		if push.IsErr {
-			return "push failed:\n" + push.Output
-		}
-		owner, repo, perr := parseOwnerRepo(repoURL)
-		if perr != nil {
-			return "ERROR: " + perr.Error()
-		}
-		pr, err := githubCreatePR(ctx, githubToken, owner, repo, title, body, branch, base)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		t.a.hooks.Send(t.projectID, fmt.Sprintf("🔗 PR opened: %s", pr.HTMLURL))
-		out, _ := json.Marshal(pr)
-		return string(out)
+        case "reset_sandbox":
+                t.a.resetSandbox(ctx, t.projectID)
+                return "sandbox closed. Next tool call that needs it will spin up a fresh one with a clean clone."
 
-	case "merge_pr":
-		num := getInt(args, "number", 0)
-		if num == 0 {
-			return "ERROR: merge_pr requires `number`"
-		}
-		repoURL := normalizeRepoURL(os.Getenv("REPO_URL"))
-		githubToken := os.Getenv("GITHUB_TOKEN")
-		if githubToken == "" || repoURL == "" {
-			return "ERROR: REPO_URL or GITHUB_TOKEN env vars not configured"
-		}
-		owner, repo, perr := parseOwnerRepo(repoURL)
-		if perr != nil {
-			return "ERROR: " + perr.Error()
-		}
-		res, err := githubMergePR(ctx, githubToken, owner, repo, num)
-		if err != nil {
-			return "ERROR: " + err.Error()
-		}
-		t.a.hooks.Send(t.projectID, fmt.Sprintf("✅ Merged PR #%d", num))
-		return res
-
-	case "reset_sandbox":
-		t.a.resetSandbox(ctx, t.projectID)
-		return "sandbox closed. Next tool call that needs it will spin up a fresh one with a clean clone."
-
-	default:
-		return "ERROR: unknown tool " + name
-	}
+        default:
+                return "ERROR: unknown tool " + name
+        }
 }
 
 func summariseArgs(args map[string]interface{}) string {
-	if len(args) == 0 {
-		return ""
-	}
-	parts := []string{}
-	for k, v := range args {
-		s := fmt.Sprintf("%v", v)
-		if len(s) > 60 {
-			s = s[:60] + "…"
-		}
-		parts = append(parts, k+"="+s)
-	}
-	return "(" + strings.Join(parts, ", ") + ")"
+        if len(args) == 0 {
+                return ""
+        }
+        parts := []string{}
+        for k, v := range args {
+                s := fmt.Sprintf("%v", v)
+                if len(s) > 60 {
+                        s = s[:60] + "…"
+                }
+                parts = append(parts, k+"="+s)
+        }
+        return "(" + strings.Join(parts, ", ") + ")"
 }
 
 func getStr(m map[string]interface{}, k string) string {
-	if v, ok := m[k]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
+        if v, ok := m[k]; ok {
+                if s, ok := v.(string); ok {
+                        return s
+                }
+        }
+        return ""
 }
 
 func getInt(m map[string]interface{}, k string, def int) int {
-	if v, ok := m[k]; ok {
-		switch n := v.(type) {
-		case float64:
-			return int(n)
-		case int:
-			return n
-		case string:
-			var i int
-			_, _ = fmt.Sscanf(n, "%d", &i)
-			if i != 0 {
-				return i
-			}
-		}
-	}
-	return def
+        if v, ok := m[k]; ok {
+                switch n := v.(type) {
+                case float64:
+                        return int(n)
+                case int:
+                        return n
+                case string:
+                        var i int
+                        _, _ = fmt.Sscanf(n, "%d", &i)
+                        if i != 0 {
+                                return i
+                        }
+                }
+        }
+        return def
 }
 
 func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+        return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
+        if len(s) <= n {
+                return s
+        }
+        return s[:n] + "…"
 }
 
 func normalizeRepoURL(u string) string {
-	u = strings.TrimSpace(u)
-	if u == "" {
-		return ""
-	}
-	if strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "git@") {
-		return u
-	}
-	if strings.HasPrefix(u, "github.com/") {
-		return "https://" + u
-	}
-	if !strings.Contains(u, "://") && strings.Count(u, "/") == 1 {
-		return "https://github.com/" + u
-	}
-	return u
+        u = strings.TrimSpace(u)
+        if u == "" {
+                return ""
+        }
+        if strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "git@") {
+                return u
+        }
+        if strings.HasPrefix(u, "github.com/") {
+                return "https://" + u
+        }
+        if !strings.Contains(u, "://") && strings.Count(u, "/") == 1 {
+                return "https://github.com/" + u
+        }
+        return u
 }
 
 func injectToken(repoURL, token string) string {
-	if token == "" || !strings.HasPrefix(repoURL, "https://") {
-		return repoURL
-	}
-	return "https://x-access-token:" + token + "@" + strings.TrimPrefix(repoURL, "https://")
+        if token == "" || !strings.HasPrefix(repoURL, "https://") {
+                return repoURL
+        }
+        return "https://x-access-token:" + token + "@" + strings.TrimPrefix(repoURL, "https://")
 }
 
 var _ = os.Stdout
