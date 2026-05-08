@@ -223,7 +223,7 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
   gap: 8px;
   height: var(--proj);
   padding: 0 calc(var(--safe-l) + 14px) 0 calc(var(--safe-r) + 14px);
-  background: var(--ink);
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
@@ -238,37 +238,40 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 }
 .proj-select {
   width: 100%;
-  background: var(--card);
-  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border2);
   border-radius: 8px;
-  padding: 7px 30px 7px 10px;
-  font-size: 13px;
+  padding: 6px 28px 6px 10px;
+  font-size: 12px;
   font-family: var(--font);
-  color: var(--text);
+  color: var(--sub);
   appearance: none;
   -webkit-appearance: none;
+  transition: border-color 0.1s;
 }
+.proj-select:focus { border-color: var(--muted); outline: none; }
 .proj-select-caret {
   position: absolute;
-  right: 10px;
+  right: 9px;
   top: 50%;
   transform: translateY(-50%);
   pointer-events: none;
-  color: var(--muted);
+  color: var(--dim);
 }
 .proj-new-btn {
   flex-shrink: 0;
-  background: var(--card);
-  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border2);
   border-radius: 8px;
-  padding: 7px 12px;
-  font-size: 13px;
+  padding: 6px 10px;
+  font-size: 12px;
   font-family: var(--font);
-  color: var(--sub);
+  color: var(--muted);
   white-space: nowrap;
   -webkit-tap-highlight-color: transparent;
+  transition: border-color 0.1s, color 0.1s;
 }
-.proj-new-btn:active { background: var(--border); }
+.proj-new-btn:active { color: var(--sub); border-color: var(--muted); }
 
 /* ─── Feed ──────────────────────────────────────────────────────────────── */
 .feed {
@@ -372,6 +375,32 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 .bubble-content ul,.bubble-content ol { padding-left: 1.2em; margin: 4px 0; }
 .bubble-content p { margin: 2px 0; }
 .bubble-content a { text-decoration: underline; opacity: 0.8; }
+
+/* ─── Thinking indicator ────────────────────────────────────────────────── */
+.thinking-dots {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 10px 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  border-bottom-left-radius: 3px;
+}
+.thinking-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--dim);
+  animation: thinking-bounce 1.4s infinite ease-in-out;
+}
+.thinking-dots span:nth-child(1) { animation-delay: 0s; }
+.thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes thinking-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
 
 /* ─── Tool call group ───────────────────────────────────────────────────── */
 .tool-group {
@@ -789,7 +818,7 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
         <div class="header-title" x-text="activeName()"></div>
         <div class="status-pill">
           <div class="status-dot" :class="agentRunning ? 'running' : 'idle'"></div>
-          <span x-text="agentRunning ? 'running' : 'idle'"></span>
+          <span x-text="agentRunning ? ('running' + (lastToolName ? ' · ' + lastToolName : '')) : 'idle'"></span>
         </div>
         <button class="icon-btn" @click="openSettings()">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8e8e93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -867,6 +896,14 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
                 </div>
               </div>
             </template>
+          </div>
+        </template>
+        <!-- Thinking indicator -->
+        <template x-if="agentRunning">
+          <div class="bubble-row agent">
+            <div class="thinking-dots">
+              <span></span><span></span><span></span>
+            </div>
           </div>
         </template>
       </div>
@@ -1081,6 +1118,7 @@ function kaptaan() {
     newProjectOpen: false,
     newProject: { name:'', repo_url:'', github_token:'', error:'' },
     toolGroupsOpen: {},
+    lastToolName: '',
 
     async init() {
       const s = await fetch('/api/auth/status').then(r=>r.json());
@@ -1143,12 +1181,16 @@ function kaptaan() {
       if (!this.activeProjectID) return;
       this.sse = new EventSource('/events?project='+this.activeProjectID);
       this.sse.addEventListener('msg', e => this.onMsg(JSON.parse(e.data)));
-      this.sse.addEventListener('state', e => { this.agentRunning = JSON.parse(e.data).running; });
+      this.sse.addEventListener('state', e => { const s = JSON.parse(e.data); this.agentRunning = s.running; if (!s.running) this.lastToolName = ''; });
       this.sse.addEventListener('ask_state', e => { this.askActive = JSON.parse(e.data).active; });
     },
 
     onMsg(m) {
       this.messages.push(m);
+      if (this.isToolCall(m)) {
+        const parsed = this.parseToolCall(m.text);
+        if (parsed.name) this.lastToolName = parsed.name;
+      }
       this.$nextTick(() => {
         const f = this.$refs.feed;
         if (f) f.scrollTop = f.scrollHeight;
@@ -1167,7 +1209,9 @@ function kaptaan() {
     },
 
     isToolCall(m) {
-      return m.type === 'message' && typeof m.text === 'string' && m.text.startsWith('`tool`');
+      if (m.type !== 'message' || typeof m.text !== 'string') return false;
+      const tick = String.fromCharCode(96);
+      return m.text.startsWith(tick + 'tool' + tick);
     },
 
     groupedMessages() {
@@ -1192,7 +1236,7 @@ function kaptaan() {
     },
 
     parseToolCall(text) {
-      const m = text.match(/^`tool`\s+\*\*([^*]+)\*\*\s*([\s\S]*)/);
+      const m = text.match(/^\x60tool\x60\s+\*\*([^*]+)\*\*\s*([\s\S]*)/);
       if (m) return { name: m[1].trim(), args: m[2].trim() };
       return { name: text, args: '' };
     },
@@ -1226,7 +1270,7 @@ function kaptaan() {
       });
       const path = this.askActive ? '/api/reply' : '/api/chat';
       const r = await this.api(path, {method:'POST', body: JSON.stringify({text})});
-      if (r.error) this.onMsg({type:'message', text:'error: '+r.error, ts: new Date().toLocaleTimeString()});
+      if (r.error) this.onMsg({type:'message', text:'error: '+r.error, ts: new Date().toTimeString().slice(0,8)});
     },
 
     autoResize(ev) {
