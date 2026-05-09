@@ -1,0 +1,54 @@
+
+✅ Kya theek hai
+Auth layer solid hai — bcrypt cost 12, 30-day sessions, constant-time comparison fake hash ke saath (timing attack protection), secure cookie flags.
+LLM retry logic achha hai — exponential backoff, per-status cooldown (401→24h, 402→1h, 429→Retry-After header se), OnAllDown callback.
+SSE replay smart hai — reconnect pe DB se puri history load hoti hai, token buffer bhi handle hota hai.
+Conversation cap (199 messages) + PruneConvo se context window blowup nahi hoga.
+Tool output truncation (16KB per tool result) bhi sensible hai.
+
+⚠️ Issues / Gaps
+1. Double-write race on handleChat
+internal/web/server.go mein handleChat do jagah user message persist karta hai:
+Ek baar khud (UI row, line ~280)
+Phir commitTurn bhi user message likhta hai (LLM row, agent.go ~250)
+SSE replay pe user message do baar dikhega agar dono rows mein ui_type='user' set ho. commitTurn mein uiType="user" set hota hai — aur handleChat bhi karta hai. Fix: commitTurn mein user message ke liye uiType blank rakho, ya handleChat mein mat likho.
+2. resetSandbox kills — lekin fir bhi E2B charges
+reset_sandbox tool Sandbox.Kill() call karta hai jo DELETE /sandboxes/:id hai. Lekin E2B ke lifecycle config mein onTimeout: pause set hai — agar kill fail ho toh sandbox paused rahega aur credits khatam honge. Minor, par worth knowing.
+3. ensureSandbox mein Ping() race condition
+if sr, ok := ps.runtime.(*tools.SandboxRuntime); ok && sr.Sandbox.Ping(ctx) {
+
+sbMu lock release hone ke baad Ping hoti hai — koi aur goroutine beech mein sandbox delete kar sakta hai. Yeh unlikely hai single-user setup mein, par technically unsound.
+4. Queue depth = 1, silently drops
+case a.queue <- queuedMsg{...}:
+default:
+    return errors.New("queue is full")
+
+Error return hota hai, par calling code (handleChat) goroutine mein hai aur error sirf log hoga. User ko visible feedback nahi milega agar do rapid messages bhejein aur dono drop ho jayein.
+5. Tool calls parallel dispatch — order not guaranteed
+var wg sync.WaitGroup
+for idx, call := range choice.ToolCalls {
+    wg.Add(1)
+    go func(i int, c llm.ToolCall) { ... }(idx, call)
+}
+
+Results results[i] mein correctly stored hain — yeh theek hai. Par agar ek tool call doosre ka side effect use kare (e.g. write_file phir shell jo wohi file run kare), parallel execution se undefined behavior ho sakta hai. DeepSeek generally ek turn mein independent tools bhejta hai, par yeh assumption fragile hai.
+6. shellAnchorDir fallback silently proceeds
+runtime_sandbox.go mein:
+fullCmd = fmt.Sprintf("cd %q 2>/dev/null || cd %q; %s", r.Cwd, shellAnchorDir, cmd)
+
+Agar r.Cwd exist nahi karta toh silently /home/user se command chalti hai. Agent ko pata nahi chalta ki wo workspace mein nahi hai — yeh confusing bugs produce kar sakta hai.
+8. go.mod mein go 1.25.0 — yeh exist nahi karta
+go 1.25.0
+
+Latest stable Go 1.24.x hai (May 2026 tak). 1.25.0 release nahi hua. Build tools isse ignore kar dete hain normally, par confusing hai.
+9. Memory key _sandbox_id mein sensitive data
+Sandbox ID memories table mein store hoti hai. Yeh semantic issue hai — memories agent-readable hain, aur _sandbox_id internal state hai jo accidentally agent delete kar sakta hai (delete_memory tool available hai). Alag table ya config key better hoga.
+10. FinalizeStream double-write possible
+func (s *Server) FinalizeStream(projectID int) {
+    text := s.streamBuf[projectID]
+    ...
+    s.db.AppendMessage(..., "message", text, ts)
+}
+
+Aur commitTurn bhi assistant message persist karta hai (LLM row mein). LoadUIMessages sirf ui_type != '' rows return karta hai — toh UI mein duplicate nahi dikhega, par DB mein redundant data hai.
+
