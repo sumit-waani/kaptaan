@@ -1,7 +1,7 @@
 // Package agent is the single autonomous coding agent that powers Kaptaan.
 // Single project, driven by REPO_URL and GITHUB_TOKEN env vars.
-// Conversation lives in memory. Scratchpad.md in the sandbox is the working
-// memory for tasks. GitHub is the source of truth for PR/merge state.
+// Conversation is persisted to SQLite. Scratchpad.md in the sandbox is the
+// working memory for tasks. GitHub is the source of truth for PR/merge state.
 package agent
 
 import (
@@ -56,7 +56,6 @@ type Agent struct {
         e2bKey string
 
         mu      sync.Mutex
-        convo   map[int][]llm.Message
         running map[int]bool
         cancels map[int]context.CancelFunc
         queue   chan queuedMsg // depth-1 queue for messages arriving while busy
@@ -71,7 +70,6 @@ func New(database *db.DB, pool *llm.Pool, e2bKey string, hooks Hooks) *Agent {
                 pool:      pool,
                 hooks:     hooks,
                 e2bKey:    e2bKey,
-                convo:     make(map[int][]llm.Message),
                 running:   make(map[int]bool),
                 cancels:   make(map[int]context.CancelFunc),
                 queue:     make(chan queuedMsg, 1),
@@ -91,9 +89,9 @@ func (a *Agent) HasQueued(projectID int) bool {
 }
 
 func (a *Agent) ResetConversation(projectID int) {
-        a.mu.Lock()
-        delete(a.convo, projectID)
-        a.mu.Unlock()
+        if err := a.db.ClearMessages(context.Background(), projectID); err != nil {
+                log.Printf("[agent] ClearMessages: %v", err)
+        }
 }
 
 // CancelTask cancels the running task for projectID. Returns false if nothing
@@ -149,7 +147,8 @@ func (a *Agent) runLoop(ctx context.Context, projectID int, text string) error {
 
                 if cancelled {
                         a.hooks.Send(projectID, "⛔ Task cancelled.")
-                        a.commitTurn(projectID, &turn{a: a, projectID: projectID, local: a.loadConvo(projectID)})
+                        t := newTurn(a, projectID)
+                        a.commitTurn(projectID, t)
                 }
 
                 // Check queue before releasing the running flag.
@@ -249,24 +248,67 @@ func (a *Agent) runLoop(ctx context.Context, projectID int, text string) error {
         return nil
 }
 
+// commitTurn persists new messages from this turn to the DB.
+// It writes turn.local[turn.baseLen:] — everything added during the current turn.
 func (a *Agent) commitTurn(projectID int, t *turn) {
-        a.mu.Lock()
-        defer a.mu.Unlock()
-        msgs := t.local
-        // Keep system message + last 199 messages (total cap: 200).
-        if len(msgs) > 200 {
-                msgs = append([]llm.Message{msgs[0]}, msgs[len(msgs)-199:]...)
+        ctx := context.Background()
+        ts := time.Now().Format("15:04:05")
+        newMsgs := t.local[t.baseLen:]
+
+        // Apply a cap: if total stored would exceed 199, prune oldest from DB first.
+        // (199 + system = 200 total sent to LLM)
+        existing, _ := a.db.LoadConvo(ctx, projectID)
+        total := len(existing) + len(newMsgs)
+        if total > 199 {
+                excess := total - 199
+                // Delete the oldest `excess` LLM rows for this project.
+                _ = a.db.PruneConvo(ctx, projectID, excess)
         }
-        a.convo[projectID] = msgs
+
+        for _, m := range newMsgs {
+                tcJSON := db.ToolCallsToJSON(m.ToolCalls)
+
+                // Determine UI fields: only user and final assistant messages are visible.
+                uiType, uiText, uiTs := "", "", ""
+                if m.Role == "user" {
+                        uiType = "user"
+                        uiText = m.Content
+                        uiTs = ts
+                }
+                // Final assistant messages are handled by FinalizeStream (server writes UI row).
+                // Tool results and intermediate assistant messages have no UI row.
+
+                if err := a.db.AppendMessage(ctx, projectID,
+                        m.Role, m.Content, m.ReasoningContent, m.ToolCallID, tcJSON,
+                        uiType, uiText, uiTs,
+                ); err != nil {
+                        log.Printf("[agent] AppendMessage: %v", err)
+                }
+        }
 }
 
+// loadConvo reads the persisted conversation from DB and prepends a fresh system prompt.
 func (a *Agent) loadConvo(projectID int) []llm.Message {
-        a.mu.Lock()
-        defer a.mu.Unlock()
-        src := a.convo[projectID]
-        dst := make([]llm.Message, len(src))
-        copy(dst, src)
-        return dst
+        rows, err := a.db.LoadConvo(context.Background(), projectID)
+        if err != nil {
+                log.Printf("[agent] LoadConvo: %v", err)
+        }
+        msgs := make([]llm.Message, 0, len(rows)+1)
+        // System prompt placeholder — will be replaced in newTurn.
+        msgs = append(msgs, llm.Message{Role: "system", Content: ""})
+        for _, r := range rows {
+                m := llm.Message{
+                        Role:             r.Role,
+                        Content:          r.Content,
+                        ReasoningContent: r.ReasoningContent,
+                        ToolCallID:       r.ToolCallID,
+                }
+                if r.ToolCalls != "" {
+                        _ = json.Unmarshal([]byte(r.ToolCalls), &m.ToolCalls)
+                }
+                msgs = append(msgs, m)
+        }
+        return msgs
 }
 
 // ─── Per-turn state ────────────────────────────────────────────────────────
@@ -275,6 +317,7 @@ type turn struct {
         a         *Agent
         projectID int
         local     []llm.Message
+        baseLen   int // index into local where new messages start (for commitTurn)
 }
 
 func newTurn(a *Agent, projectID int) *turn {
@@ -286,6 +329,7 @@ func newTurn(a *Agent, projectID int) *turn {
                 prior[0] = llm.Message{Role: "system", Content: t.systemPrompt()}
                 t.local = prior
         }
+        t.baseLen = len(t.local)
         return t
 }
 
@@ -737,26 +781,22 @@ func shellQuote(s string) string {
         return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-// normalizeRepoURL strips any embedded credentials from a repo URL so it is
-// safe to include in the system prompt.
+// normalizeRepoURL strips any embedded credentials from a repo URL.
 func normalizeRepoURL(raw string) string {
         raw = strings.TrimSpace(raw)
         if raw == "" {
                 return ""
         }
-        // Strip https://user:token@github.com/... → https://github.com/...
         if idx := strings.Index(raw, "@"); idx != -1 && strings.HasPrefix(raw, "https://") {
                 raw = "https://" + raw[idx+1:]
         }
         return strings.TrimSuffix(raw, ".git")
 }
 
-// injectToken returns a clone URL with the GitHub token embedded for
-// authenticated git operations: https://TOKEN@github.com/owner/repo.git
+// injectToken returns a clone URL with the GitHub token embedded.
 func injectToken(repoURL, token string) string {
         repoURL = strings.TrimSpace(repoURL)
         repoURL = strings.TrimSuffix(repoURL, ".git")
-        // Strip any existing credentials first.
         if idx := strings.Index(repoURL, "@"); idx != -1 && strings.HasPrefix(repoURL, "https://") {
                 repoURL = "https://" + repoURL[idx+1:]
         }

@@ -19,7 +19,6 @@ import (
 )
 
 const fixedProjectID = 1
-const ringSize = 200
 
 // Agent is the surface the web layer needs.
 type Agent interface {
@@ -92,8 +91,7 @@ type Server struct {
 	pending map[int]*pendingAsk
 	motd    string
 
-	ringMu    sync.Mutex
-	msgRing   []string       // last ringSize SSE payloads for replay
+	streamMu  sync.Mutex
 	streamBuf map[int]string // per-project streaming token accumulator
 }
 
@@ -114,78 +112,63 @@ func (s *Server) SetMOTD(msg string) {
 	s.mu.Unlock()
 }
 
-// ─── Ring buffer helpers ────────────────────────────────────────────────────
-
-func (s *Server) ringAppend(payload string) {
-	s.ringMu.Lock()
-	defer s.ringMu.Unlock()
-	s.msgRing = append(s.msgRing, payload)
-	if len(s.msgRing) > ringSize {
-		s.msgRing = s.msgRing[len(s.msgRing)-ringSize:]
-	}
-}
-
-func (s *Server) ringSnapshot() []string {
-	s.ringMu.Lock()
-	defer s.ringMu.Unlock()
-	out := make([]string, len(s.msgRing))
-	copy(out, s.msgRing)
-	return out
-}
-
-func (s *Server) ringClear() {
-	s.ringMu.Lock()
-	defer s.ringMu.Unlock()
-	s.msgRing = nil
-}
-
 // ─── Outbound hooks ────────────────────────────────────────────────────────
 
+// SendToProject sends a text message to the UI and persists it for SSE replay.
 func (s *Server) SendToProject(projectID int, text string) {
+	ts := time.Now().Format("15:04:05")
 	payload := map[string]string{
 		"type": "message",
 		"text": text,
-		"ts":   time.Now().Format("15:04:05"),
+		"ts":   ts,
 	}
 	data, _ := json.Marshal(payload)
 	sse := "event: msg\ndata: " + string(data) + "\n\n"
-	s.ringAppend(sse)
+
+	// Persist for reconnect replay.
+	if err := s.db.AppendMessage(context.Background(), projectID,
+		"", "", "", "", "", "message", text, ts,
+	); err != nil {
+		log.Printf("[web] AppendMessage (send): %v", err)
+	}
+
 	s.hub.broadcast(projectID, sse)
 	log.Printf("[web] send → p%d: %s", projectID, trunc(text, 80))
 }
 
 // SendToken forwards a streaming content token to all SSE clients.
 func (s *Server) SendToken(projectID int, token string) {
-	s.ringMu.Lock()
+	s.streamMu.Lock()
 	s.streamBuf[projectID] += token
-	s.ringMu.Unlock()
+	s.streamMu.Unlock()
 	data, _ := json.Marshal(map[string]string{"text": token})
 	s.hub.broadcast(projectID, "event: token\ndata: "+string(data)+"\n\n")
 }
 
-// CancelStream tells clients to discard their in-progress streaming buffer
-// (used when the streaming response turned out to be an intermediate tool-call step).
+// CancelStream tells clients to discard their in-progress streaming buffer.
 func (s *Server) CancelStream(projectID int) {
-	s.ringMu.Lock()
+	s.streamMu.Lock()
 	delete(s.streamBuf, projectID)
-	s.ringMu.Unlock()
+	s.streamMu.Unlock()
 	s.hub.broadcast(projectID, "event: stream_cancel\ndata: {}\n\n")
 }
 
-// FinalizeStream tells clients to commit the streaming buffer as a message.
+// FinalizeStream tells clients to commit the streaming buffer as a message,
+// and persists the completed text for SSE replay on reconnect.
 func (s *Server) FinalizeStream(projectID int) {
-	s.ringMu.Lock()
+	s.streamMu.Lock()
 	text := s.streamBuf[projectID]
 	delete(s.streamBuf, projectID)
-	s.ringMu.Unlock()
+	s.streamMu.Unlock()
+
 	if text != "" {
-		payload := map[string]string{
-			"type": "message",
-			"text": text,
-			"ts":   time.Now().Format("15:04:05"),
+		ts := time.Now().Format("15:04:05")
+		// Persist the finalized assistant message for reconnect replay.
+		if err := s.db.AppendMessage(context.Background(), projectID,
+			"", "", "", "", "", "message", text, ts,
+		); err != nil {
+			log.Printf("[web] AppendMessage (finalize): %v", err)
 		}
-		data, _ := json.Marshal(payload)
-		s.ringAppend("event: msg\ndata: " + string(data) + "\n\n")
 	}
 	s.hub.broadcast(projectID, "event: stream_done\ndata: {}\n\n")
 }
@@ -212,10 +195,20 @@ func (s *Server) AskProject(projectID int, question string) string {
 		s.broadcastAskState(projectID)
 	}()
 
+	ts := time.Now().Format("15:04:05")
 	payload, _ := json.Marshal(map[string]string{
-		"type": "ask", "text": question, "ts": time.Now().Format("15:04:05"),
+		"type": "ask", "text": question, "ts": ts,
 	})
-	s.hub.broadcast(projectID, "event: msg\ndata: "+string(payload)+"\n\n")
+	askSSE := "event: msg\ndata: " + string(payload) + "\n\n"
+
+	// Persist ask for reconnect replay.
+	if err := s.db.AppendMessage(context.Background(), projectID,
+		"", "", "", "", "", "ask", question, ts,
+	); err != nil {
+		log.Printf("[web] AppendMessage (ask): %v", err)
+	}
+
+	s.hub.broadcast(projectID, askSSE)
 	s.broadcastAskState(projectID)
 
 	select {
@@ -316,9 +309,18 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	// Replay ring buffer before joining the live stream.
-	for _, payload := range s.ringSnapshot() {
-		fmt.Fprint(w, payload)
+	// Replay persisted UI messages from DB before joining the live stream.
+	uiMsgs, err := s.db.LoadUIMessages(r.Context(), fixedProjectID)
+	if err != nil {
+		log.Printf("[web] LoadUIMessages: %v", err)
+	}
+	for _, m := range uiMsgs {
+		payload, _ := json.Marshal(map[string]string{
+			"type": m.UIType,
+			"text": m.UIText,
+			"ts":   m.UITs,
+		})
+		fmt.Fprintf(w, "event: msg\ndata: %s\n\n", payload)
 	}
 
 	// Increased channel buffer (256) to reduce drops for fast-producing agents.
@@ -338,8 +340,6 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	motd := s.motd
 	s.mu.Unlock()
 	if pa != nil {
-		askMsg, _ := json.Marshal(map[string]string{"type": "ask", "text": pa.question, "ts": time.Now().Format("15:04:05")})
-		fmt.Fprintf(w, "event: msg\ndata: %s\n\n", askMsg)
 		askState, _ := json.Marshal(map[string]interface{}{"active": true, "question": pa.question})
 		fmt.Fprintf(w, "event: ask_state\ndata: %s\n\n", askState)
 	}
@@ -385,11 +385,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "empty message", http.StatusBadRequest)
 		return
 	}
+
+	ts := time.Now().Format("15:04:05")
 	echo, _ := json.Marshal(map[string]string{
-		"type": "user", "text": payload.Text, "ts": time.Now().Format("15:04:05"),
+		"type": "user", "text": payload.Text, "ts": ts,
 	})
 	echoSSE := "event: msg\ndata: " + string(echo) + "\n\n"
-	s.ringAppend(echoSSE)
+
+	// Persist user message for reconnect replay.
+	if err := s.db.AppendMessage(r.Context(), fixedProjectID,
+		"", "", "", "", "", "user", payload.Text, ts,
+	); err != nil {
+		log.Printf("[web] AppendMessage (user echo): %v", err)
+	}
 	s.hub.broadcast(fixedProjectID, echoSSE)
 
 	if s.agent == nil {
@@ -431,9 +439,17 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 	}
 	select {
 	case pa.reply <- payload.Text:
+		ts := time.Now().Format("15:04:05")
+		replyText := "You: " + payload.Text
 		echo, _ := json.Marshal(map[string]string{
-			"type": "reply", "text": "You: " + payload.Text, "ts": time.Now().Format("15:04:05"),
+			"type": "reply", "text": replyText, "ts": ts,
 		})
+		// Persist reply for reconnect replay.
+		if err := s.db.AppendMessage(r.Context(), fixedProjectID,
+			"", "", "", "", "", "reply", replyText, ts,
+		); err != nil {
+			log.Printf("[web] AppendMessage (reply): %v", err)
+		}
 		s.hub.broadcast(fixedProjectID, "event: msg\ndata: "+string(echo)+"\n\n")
 		jsonOK(w, map[string]string{"ok": "sent"})
 	default:
@@ -446,10 +462,15 @@ func (s *Server) handleClearConvo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+	// Clear both LLM convo rows and UI display rows from DB.
+	if err := s.db.ClearMessages(r.Context(), fixedProjectID); err != nil {
+		log.Printf("[web] ClearMessages: %v", err)
+	}
 	if s.agent != nil {
+		// ResetConversation also calls ClearMessages; no-op here but kept for
+		// any future in-memory state the agent might hold.
 		s.agent.ResetConversation(fixedProjectID)
 	}
-	s.ringClear()
 	s.SendToProject(fixedProjectID, "🧹 Conversation cleared.")
 	jsonOK(w, map[string]string{"ok": "cleared"})
 }
