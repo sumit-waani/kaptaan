@@ -19,6 +19,14 @@ die()     { echo -e "${RED}[kaptaan] ERROR:${NC} $*" >&2; exit 1; }
 # ── Must run as root ─────────────────────────────────────────────────────────
 [[ $EUID -eq 0 ]] || die "Run this script with sudo or as root."
 
+# ── Require GitHub PAT (private repo) ────────────────────────────────────────
+[[ -n "${GITHUB_TOKEN:-}" ]] || die "GITHUB_TOKEN is required for private repo access.
+  Run: sudo GITHUB_TOKEN=ghp_xxx bash install.sh"
+
+# Inject token into the clone URL: https://TOKEN@github.com/owner/repo
+# Works whether REPO_URL starts with https:// or not.
+AUTH_REPO_URL="${REPO_URL/https:\/\//https:\/\/${GITHUB_TOKEN}@}"
+
 # ── Detect OS / package manager ──────────────────────────────────────────────
 if command -v apt-get &>/dev/null; then
     PKG_MGR="apt"
@@ -44,13 +52,12 @@ esac
 
 # ── Install Go if needed ──────────────────────────────────────────────────────
 GOROOT="/usr/local/go"
-GO_BIN="$GOROOT/bin/go"
 
 need_go=false
-if ! command -v go &>/dev/null && [[ ! -x "$GO_BIN" ]]; then
+if ! command -v go &>/dev/null && [[ ! -x "$GOROOT/bin/go" ]]; then
     need_go=true
 else
-    current_go=$(go version 2>/dev/null | awk '{print $3}' | sed 's/go//')
+    current_go=$(${GOROOT}/bin/go version 2>/dev/null | awk '{print $3}' | sed 's/go//' || go version | awk '{print $3}' | sed 's/go//')
     if [[ "$(printf '%s\n' "$GO_VERSION" "$current_go" | sort -V | head -1)" != "$GO_VERSION" ]]; then
         warn "Go $current_go is older than required $GO_VERSION — reinstalling."
         need_go=true
@@ -66,8 +73,7 @@ if $need_go; then
         *)        die "Unsupported architecture: $ARCH" ;;
     esac
     GO_TAR="go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
-    GO_URL="https://dl.google.com/go/$GO_TAR"
-    wget -q "$GO_URL" -O "/tmp/$GO_TAR"
+    wget -q "https://dl.google.com/go/$GO_TAR" -O "/tmp/$GO_TAR"
     rm -rf "$GOROOT"
     tar -C /usr/local -xzf "/tmp/$GO_TAR"
     rm "/tmp/$GO_TAR"
@@ -80,11 +86,17 @@ go version
 # ── Clone or update source ────────────────────────────────────────────────────
 if [[ -d "$INSTALL_DIR/.git" ]]; then
     info "Updating existing source in $INSTALL_DIR..."
+    # Update the remote URL with the current token, then pull latest.
+    git -C "$INSTALL_DIR" remote set-url origin "$AUTH_REPO_URL"
     git -C "$INSTALL_DIR" fetch --quiet origin
     git -C "$INSTALL_DIR" reset --hard origin/HEAD --quiet
+    # Remove the token from the stored remote URL so it isn't sitting on disk.
+    git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL"
 else
-    info "Cloning $REPO_URL into $INSTALL_DIR..."
-    git clone --quiet "$REPO_URL" "$INSTALL_DIR"
+    info "Cloning repository into $INSTALL_DIR..."
+    git clone --quiet "$AUTH_REPO_URL" "$INSTALL_DIR"
+    # Remove the token from the stored remote URL immediately after clone.
+    git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL"
 fi
 
 # ── Build binary ──────────────────────────────────────────────────────────────
@@ -142,7 +154,7 @@ sleep 2
 if systemctl is-active --quiet "$SERVICE"; then
     info "kaptaan is running on port $PORT"
     echo ""
-    echo -e "  ${GREEN}Open http://$(curl -s ifconfig.me 2>/dev/null || echo '<your-ip>'):$PORT in your browser${NC}"
+    echo -e "  ${GREEN}Open http://$(curl -s ifconfig.me 2>/dev/null || echo '<your-lightsail-ip>'):$PORT in your browser${NC}"
     echo -e "  ${YELLOW}Remember to open port $PORT in your Lightsail firewall if you haven't already.${NC}"
 else
     warn "Service may not have started. Check logs with:"
