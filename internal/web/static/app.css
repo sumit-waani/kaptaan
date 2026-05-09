@@ -190,6 +190,23 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 }
 .icon-btn:active { background: var(--card); }
 
+.stop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  color: #ff453a;
+  border: 1px solid rgba(255,69,58,0.35);
+  background: rgba(255,69,58,0.1);
+  transition: opacity 0.1s, background 0.1s;
+  -webkit-tap-highlight-color: transparent;
+}
+.stop-btn:active { background: rgba(255,69,58,0.22); }
+.stop-btn:disabled { opacity: 0.4; cursor: default; }
+
 /* ─── Feed ──────────────────────────────────────────────────────────────── */
 .feed {
   flex: 1;

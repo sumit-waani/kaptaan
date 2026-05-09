@@ -4,6 +4,7 @@ function kaptaan() {
     messages: [],
     composer: '',
     agentRunning: false,
+    cancellingTask: false,
     askActive: false,
     hasQueued: false,
     sse: null,
@@ -57,7 +58,7 @@ function kaptaan() {
         const s = JSON.parse(e.data);
         this.agentRunning = s.running;
         this.hasQueued = s.queued || false;
-        if (!s.running) this.lastToolName = '';
+        if (!s.running) { this.lastToolName = ''; this.cancellingTask = false; }
       });
       this.sse.addEventListener('ask_state', e => { this.askActive = JSON.parse(e.data).active; });
       this.sse.addEventListener('token', e => {
@@ -185,6 +186,12 @@ function kaptaan() {
       const el = ev.target;
       el.style.height = '';
       el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    },
+
+    async cancelTask() {
+      if (this.cancellingTask) return;
+      this.cancellingTask = true;
+      await this.api('/api/task/cancel', {method:'POST'});
     },
 
     async clearConvo() {

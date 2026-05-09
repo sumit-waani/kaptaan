@@ -58,6 +58,7 @@ type Agent struct {
         mu      sync.Mutex
         convo   map[int][]llm.Message
         running map[int]bool
+        cancels map[int]context.CancelFunc
         queue   chan queuedMsg // depth-1 queue for messages arriving while busy
 
         sbMu      sync.Mutex
@@ -72,6 +73,7 @@ func New(database *db.DB, pool *llm.Pool, e2bKey string, hooks Hooks) *Agent {
                 e2bKey:    e2bKey,
                 convo:     make(map[int][]llm.Message),
                 running:   make(map[int]bool),
+                cancels:   make(map[int]context.CancelFunc),
                 queue:     make(chan queuedMsg, 1),
                 sandboxes: make(map[int]*projectSandbox),
         }
@@ -92,6 +94,19 @@ func (a *Agent) ResetConversation(projectID int) {
         a.mu.Lock()
         delete(a.convo, projectID)
         a.mu.Unlock()
+}
+
+// CancelTask cancels the running task for projectID. Returns false if nothing
+// was running.
+func (a *Agent) CancelTask(projectID int) bool {
+        a.mu.Lock()
+        fn := a.cancels[projectID]
+        a.mu.Unlock()
+        if fn == nil {
+                return false
+        }
+        fn()
+        return true
 }
 
 // HandleUserMessage processes one user turn end-to-end. Blocking.
@@ -120,7 +135,23 @@ func (a *Agent) HandleUserMessage(ctx context.Context, projectID int, text strin
 
 // runLoop processes text, then drains the queue before releasing the running flag.
 func (a *Agent) runLoop(ctx context.Context, projectID int, text string) error {
+        taskCtx, cancel := context.WithCancel(ctx)
+        a.mu.Lock()
+        a.cancels[projectID] = cancel
+        a.mu.Unlock()
+
+        cancelled := false
         defer func() {
+                cancel()
+                a.mu.Lock()
+                delete(a.cancels, projectID)
+                a.mu.Unlock()
+
+                if cancelled {
+                        a.hooks.Send(projectID, "⛔ Task cancelled.")
+                        a.commitTurn(projectID, &turn{a: a, projectID: projectID, local: a.loadConvo(projectID)})
+                }
+
                 // Check queue before releasing the running flag.
                 select {
                 case next := <-a.queue:
@@ -150,12 +181,19 @@ func (a *Agent) runLoop(ctx context.Context, projectID int, text string) error {
         const maxIterations = 200
         for i := 0; i < maxIterations; i++ {
                 // Stream all LLM responses; cancel the stream visually if tool calls follow.
-                resp, err := a.pool.ChatStream(ctx, turn.messages(), turn.toolDefs(), func(token string) {
+                resp, err := a.pool.ChatStream(taskCtx, turn.messages(), turn.toolDefs(), func(token string) {
                         if a.hooks.Token != nil {
                                 a.hooks.Token(projectID, token)
                         }
                 })
                 if err != nil {
+                        if errors.Is(err, context.Canceled) {
+                                cancelled = true
+                                if a.hooks.CancelStream != nil {
+                                        a.hooks.CancelStream(projectID)
+                                }
+                                return nil
+                        }
                         a.hooks.Send(projectID, "❌ LLM error: "+err.Error())
                         return err
                 }
@@ -195,7 +233,7 @@ func (a *Agent) runLoop(ctx context.Context, projectID int, text string) error {
                                 defer wg.Done()
                                 log.Printf("[tool] → %s %s", c.Function.Name, truncate(c.Function.Arguments, 200))
                                 tStart := time.Now()
-                                out := turn.dispatch(ctx, c)
+                                out := turn.dispatch(taskCtx, c)
                                 log.Printf("[tool] ← %s %.1fs | %s", c.Function.Name, time.Since(tStart).Seconds(), truncate(out, 150))
                                 results[i] = toolResult{id: c.ID, output: out}
                         }(idx, call)

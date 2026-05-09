@@ -19,6 +19,7 @@ import (
 )
 
 const fixedProjectID = 1
+const ringSize = 200
 
 // Agent is the surface the web layer needs.
 type Agent interface {
@@ -27,6 +28,7 @@ type Agent interface {
 	HasQueued(projectID int) bool
 	ResetConversation(projectID int)
 	ReadScratchpad(ctx context.Context, projectID int) (string, error)
+	CancelTask(projectID int) bool
 }
 
 // ─── SSE hub ───────────────────────────────────────────────────────────────
@@ -89,13 +91,18 @@ type Server struct {
 	mu      sync.Mutex
 	pending map[int]*pendingAsk
 	motd    string
+
+	ringMu    sync.Mutex
+	msgRing   []string       // last ringSize SSE payloads for replay
+	streamBuf map[int]string // per-project streaming token accumulator
 }
 
 func New(database *db.DB) *Server {
 	return &Server{
-		db:      database,
-		hub:     newHub(),
-		pending: map[int]*pendingAsk{},
+		db:        database,
+		hub:       newHub(),
+		pending:   map[int]*pendingAsk{},
+		streamBuf: map[int]string{},
 	}
 }
 
@@ -107,6 +114,31 @@ func (s *Server) SetMOTD(msg string) {
 	s.mu.Unlock()
 }
 
+// ─── Ring buffer helpers ────────────────────────────────────────────────────
+
+func (s *Server) ringAppend(payload string) {
+	s.ringMu.Lock()
+	defer s.ringMu.Unlock()
+	s.msgRing = append(s.msgRing, payload)
+	if len(s.msgRing) > ringSize {
+		s.msgRing = s.msgRing[len(s.msgRing)-ringSize:]
+	}
+}
+
+func (s *Server) ringSnapshot() []string {
+	s.ringMu.Lock()
+	defer s.ringMu.Unlock()
+	out := make([]string, len(s.msgRing))
+	copy(out, s.msgRing)
+	return out
+}
+
+func (s *Server) ringClear() {
+	s.ringMu.Lock()
+	defer s.ringMu.Unlock()
+	s.msgRing = nil
+}
+
 // ─── Outbound hooks ────────────────────────────────────────────────────────
 
 func (s *Server) SendToProject(projectID int, text string) {
@@ -116,12 +148,17 @@ func (s *Server) SendToProject(projectID int, text string) {
 		"ts":   time.Now().Format("15:04:05"),
 	}
 	data, _ := json.Marshal(payload)
-	s.hub.broadcast(projectID, "event: msg\ndata: "+string(data)+"\n\n")
+	sse := "event: msg\ndata: " + string(data) + "\n\n"
+	s.ringAppend(sse)
+	s.hub.broadcast(projectID, sse)
 	log.Printf("[web] send → p%d: %s", projectID, trunc(text, 80))
 }
 
 // SendToken forwards a streaming content token to all SSE clients.
 func (s *Server) SendToken(projectID int, token string) {
+	s.ringMu.Lock()
+	s.streamBuf[projectID] += token
+	s.ringMu.Unlock()
 	data, _ := json.Marshal(map[string]string{"text": token})
 	s.hub.broadcast(projectID, "event: token\ndata: "+string(data)+"\n\n")
 }
@@ -129,11 +166,27 @@ func (s *Server) SendToken(projectID int, token string) {
 // CancelStream tells clients to discard their in-progress streaming buffer
 // (used when the streaming response turned out to be an intermediate tool-call step).
 func (s *Server) CancelStream(projectID int) {
+	s.ringMu.Lock()
+	delete(s.streamBuf, projectID)
+	s.ringMu.Unlock()
 	s.hub.broadcast(projectID, "event: stream_cancel\ndata: {}\n\n")
 }
 
 // FinalizeStream tells clients to commit the streaming buffer as a message.
 func (s *Server) FinalizeStream(projectID int) {
+	s.ringMu.Lock()
+	text := s.streamBuf[projectID]
+	delete(s.streamBuf, projectID)
+	s.ringMu.Unlock()
+	if text != "" {
+		payload := map[string]string{
+			"type": "message",
+			"text": text,
+			"ts":   time.Now().Format("15:04:05"),
+		}
+		data, _ := json.Marshal(payload)
+		s.ringAppend("event: msg\ndata: " + string(data) + "\n\n")
+	}
 	s.hub.broadcast(projectID, "event: stream_done\ndata: {}\n\n")
 }
 
@@ -222,6 +275,7 @@ func (s *Server) Start(ctx context.Context) {
 	mux.HandleFunc("/api/conversation/clear", s.requireAuth(s.handleClearConvo))
 	mux.HandleFunc("/api/credits", s.requireAuth(s.handleCredits))
 	mux.HandleFunc("/api/scratchpad", s.requireAuth(s.handleScratchpad))
+	mux.HandleFunc("/api/task/cancel", s.requireAuth(s.handleCancelTask))
 
 	srv := &http.Server{Addr: "0.0.0.0:5000", Handler: mux}
 	go func() {
@@ -261,6 +315,11 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+
+	// Replay ring buffer before joining the live stream.
+	for _, payload := range s.ringSnapshot() {
+		fmt.Fprint(w, payload)
+	}
 
 	// Increased channel buffer (256) to reduce drops for fast-producing agents.
 	c := &sseClient{projectID: fixedProjectID, ch: make(chan string, 256)}
@@ -329,7 +388,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	echo, _ := json.Marshal(map[string]string{
 		"type": "user", "text": payload.Text, "ts": time.Now().Format("15:04:05"),
 	})
-	s.hub.broadcast(fixedProjectID, "event: msg\ndata: "+string(echo)+"\n\n")
+	echoSSE := "event: msg\ndata: " + string(echo) + "\n\n"
+	s.ringAppend(echoSSE)
+	s.hub.broadcast(fixedProjectID, echoSSE)
 
 	if s.agent == nil {
 		jsonErr(w, "agent not configured", http.StatusServiceUnavailable)
@@ -388,8 +449,25 @@ func (s *Server) handleClearConvo(w http.ResponseWriter, r *http.Request) {
 	if s.agent != nil {
 		s.agent.ResetConversation(fixedProjectID)
 	}
+	s.ringClear()
 	s.SendToProject(fixedProjectID, "🧹 Conversation cleared.")
 	jsonOK(w, map[string]string{"ok": "cleared"})
+}
+
+func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.agent == nil {
+		jsonErr(w, "agent not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.agent.CancelTask(fixedProjectID) {
+		jsonErr(w, "no task running", http.StatusBadRequest)
+		return
+	}
+	jsonOK(w, map[string]string{"ok": "cancelled"})
 }
 
 // ─── Credits ───────────────────────────────────────────────────────────────
