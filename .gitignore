@@ -12,3 +12,4 @@ coverage.out
 .vscode/
 Kaptaan
 kaptaan
+*.db
