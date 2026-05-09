@@ -58,6 +58,16 @@ function kaptaan() {
     connect() {
       if (this.sse) this.sse.close();
       this.sse = new EventSource('/events');
+      this.sse.addEventListener('error', () => {
+        // On persistent SSE error, verify session is still valid.
+        fetch('/api/auth/status').then(r => r.json()).then(s => {
+          if (!s.loggedIn) {
+            this.auth.loggedIn = false;
+            this.showSettings = false;
+            if (this.sse) { this.sse.close(); this.sse = null; }
+          }
+        }).catch(()=>{});
+      });
       this.sse.addEventListener('msg', e => this.onMsg(JSON.parse(e.data)));
       this.sse.addEventListener('state', e => {
         const s = JSON.parse(e.data);
@@ -270,7 +280,15 @@ function kaptaan() {
 
     api(path, opts={}) {
       const headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{});
-      return fetch(path, Object.assign({}, opts, {headers})).then(r=>r.json()).catch(()=>({}));
+      return fetch(path, Object.assign({}, opts, {headers})).then(r => {
+        if (r.status === 401) {
+          this.auth.loggedIn = false;
+          this.showSettings = false;
+          if (this.sse) { this.sse.close(); this.sse = null; }
+          return {error: 'session expired'};
+        }
+        return r.json();
+      }).catch(()=>({}));
     },
   };
 }
