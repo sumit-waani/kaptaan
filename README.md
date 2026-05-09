@@ -42,6 +42,10 @@ curl -fsSL \
   https://raw.githubusercontent.com/sumit-waani/kaptaan/main/install.sh \
   -o /tmp/install.sh
 ```
+```bash
+sudo REPO_URL="https://ghp_YOUR_TOKEN_HERE@github.com/sumit-waani/kaptaan" bash /tmp/install.sh
+```
+
 
 That's it. The script will:
 
