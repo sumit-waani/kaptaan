@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────────────────────
-REPO_URL="${REPO_URL:-https://github.com/cto-agent/cto-agent}"
+REPO_URL="${REPO_URL:-https://github.com/sumit-waani/kaptaan}"
 INSTALL_DIR="/opt/kaptaan"
 DATA_DIR="/var/lib/kaptaan"
 BINARY="/usr/local/bin/kaptaan"
