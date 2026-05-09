@@ -38,13 +38,13 @@ Replace `ghp_YOUR_TOKEN_HERE` with your actual GitHub PAT both times.
 
 ```bash
 curl -fsSL \
-  -H "Authorization: token ghp_YOUR_TOKEN_HERE" \
+  -H "Authorization: token ghp_YOUR_TOKEN" \
   https://raw.githubusercontent.com/sumit-waani/kaptaan/main/install.sh \
   -o /tmp/install.sh
+
+sudo GITHUB_TOKEN=ghp_YOUR_TOKEN bash /tmp/install.sh
 ```
-```bash
-sudo REPO_URL="https://ghp_YOUR_TOKEN_HERE@github.com/sumit-waani/kaptaan" bash /tmp/install.sh
-```
+
 
 
 That's it. The script will:
