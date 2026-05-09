@@ -252,12 +252,21 @@ func (a *Agent) commitTurn(projectID int, t *turn) {
 
         // Apply a cap: if total stored would exceed 199, prune oldest from DB first.
         // (199 + system = 200 total sent to LLM)
+        // We round the delete count UP to the next 'user' message boundary so we
+        // never split an assistant+tool_calls / tool group in half — that would
+        // produce an invalid conversation that DeepSeek rejects with a 400.
         existing, _ := a.db.LoadConvo(ctx, projectID)
         total := len(existing) + len(newMsgs)
         if total > 199 {
                 excess := total - 199
-                // Delete the oldest `excess` LLM rows for this project.
-                _ = a.db.PruneConvo(ctx, projectID, excess)
+                // Walk forward from `excess` until we land on a 'user' message
+                // (or run out of existing messages). This ensures the remaining
+                // history always starts cleanly at a user turn.
+                rounded := excess
+                for rounded < len(existing) && existing[rounded].Role != "user" {
+                        rounded++
+                }
+                _ = a.db.PruneConvo(ctx, projectID, rounded)
         }
 
         for _, m := range newMsgs {
@@ -279,6 +288,8 @@ func (a *Agent) commitTurn(projectID int, t *turn) {
 }
 
 // loadConvo reads the persisted conversation from DB and prepends a fresh system prompt.
+// The loaded history is sanitized to remove any sequences that would be rejected by
+// the LLM API (e.g. orphaned tool messages left by a mid-group prune).
 func (a *Agent) loadConvo(projectID int) []llm.Message {
         rows, err := a.db.LoadConvo(context.Background(), projectID)
         if err != nil {
@@ -299,7 +310,54 @@ func (a *Agent) loadConvo(projectID int) []llm.Message {
                 }
                 msgs = append(msgs, m)
         }
-        return msgs
+        return sanitizeConvo(msgs)
+}
+
+// sanitizeConvo removes message sequences that would be rejected by the LLM API:
+//  1. tool messages not preceded (directly or via other tool messages) by an
+//     assistant message that carried tool_calls — these are left orphaned when
+//     PruneConvo splits a group mid-way.
+//  2. a trailing assistant message that has tool_calls but no following tool
+//     messages — the LLM expects results before the conversation can continue.
+func sanitizeConvo(msgs []llm.Message) []llm.Message {
+        out := make([]llm.Message, 0, len(msgs))
+        for i, m := range msgs {
+                if m.Role != "tool" {
+                        out = append(out, m)
+                        continue
+                }
+                // Walk backwards through the original slice to find the anchor
+                // assistant message for this tool message.
+                valid := false
+                for j := i - 1; j >= 0; j-- {
+                        if msgs[j].Role == "tool" {
+                                continue // same tool-result group, keep scanning
+                        }
+                        if msgs[j].Role == "assistant" && len(msgs[j].ToolCalls) > 0 {
+                                valid = true
+                        }
+                        break
+                }
+                if valid {
+                        out = append(out, m)
+                } else {
+                        log.Printf("[agent] sanitizeConvo: dropping orphaned tool message (id=%s)", m.ToolCallID)
+                }
+        }
+
+        // Strip any trailing assistant message that has tool_calls but no tool
+        // responses — the API would reject the next request immediately.
+        for len(out) > 0 {
+                last := out[len(out)-1]
+                if last.Role == "assistant" && len(last.ToolCalls) > 0 {
+                        log.Printf("[agent] sanitizeConvo: dropping trailing assistant with unresolved tool_calls")
+                        out = out[:len(out)-1]
+                } else {
+                        break
+                }
+        }
+
+        return out
 }
 
 // ─── Per-turn state ────────────────────────────────────────────────────────
