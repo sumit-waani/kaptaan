@@ -270,14 +270,23 @@ func (s *Server) Start(ctx context.Context) {
         mux.HandleFunc("/api/task/cancel", s.requireAuth(s.handleCancelTask))
         mux.HandleFunc("/api/config", s.requireAuth(s.handleConfig))
 
-        srv := &http.Server{Addr: "0.0.0.0:5000", Handler: mux}
-        go func() {
-                <-ctx.Done()
-                _ = srv.Shutdown(context.Background())
-        }()
-        log.Println("[web] listening on :5000")
-        if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-                log.Printf("[web] server error: %v", err)
+        addrs := []string{"0.0.0.0:80", "0.0.0.0:5000"}
+        servers := make([]*http.Server, len(addrs))
+        for i, addr := range addrs {
+                srv := &http.Server{Addr: addr, Handler: mux}
+                servers[i] = srv
+                go func(srv *http.Server) {
+                        log.Printf("[web] listening on %s", srv.Addr)
+                        if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+                                log.Printf("[web] server error on %s: %v", srv.Addr, err)
+                        }
+                }(srv)
+        }
+
+        <-ctx.Done()
+        shutCtx := context.Background()
+        for _, srv := range servers {
+                _ = srv.Shutdown(shutCtx)
         }
 }
 

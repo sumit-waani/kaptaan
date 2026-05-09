@@ -7,7 +7,7 @@ INSTALL_DIR="/opt/kaptaan"
 DATA_DIR="/var/lib/kaptaan"
 BINARY="/usr/local/bin/kaptaan"
 SERVICE="kaptaan"
-PORT="5000"
+PORT="80"
 GO_VERSION="1.24.3"
 
 # ── Colours ──────────────────────────────────────────────────────────────────
@@ -132,6 +132,9 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=kaptaan
+# Allow binding privileged ports (80) without running as root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
@@ -152,10 +155,12 @@ fi
 # ── Done ──────────────────────────────────────────────────────────────────────
 sleep 2
 if systemctl is-active --quiet "$SERVICE"; then
-    info "kaptaan is running on port $PORT"
+    info "kaptaan is running on port 80 and 5000"
     echo ""
-    echo -e "  ${GREEN}Open http://$(curl -s ifconfig.me 2>/dev/null || echo '<your-lightsail-ip>'):$PORT in your browser${NC}"
-    echo -e "  ${YELLOW}Remember to open port $PORT in your Lightsail firewall if you haven't already.${NC}"
+    PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null || echo '<your-lightsail-ip>')
+    echo -e "  ${GREEN}Open http://${PUBLIC_IP} in your browser (port 80)${NC}"
+    echo -e "  ${GREEN}Or http://${PUBLIC_IP}:5000 (fallback port 5000)${NC}"
+    echo -e "  ${YELLOW}Remember to open ports 80 and 5000 in your Lightsail firewall if you haven't already.${NC}"
 else
     warn "Service may not have started. Check logs with:"
     echo "  journalctl -u kaptaan -n 50 --no-pager"
