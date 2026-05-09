@@ -1,68 +1,95 @@
 package db
 
 import (
-	"context"
-	"errors"
-	"time"
-
-	"github.com/jackc/pgx/v5"
+        "context"
+        "database/sql"
+        "errors"
+        "fmt"
+        "time"
 )
 
 // ─── Memories ──────────────────────────────────────────────────────────────
 
 type Memory struct {
-	ID        int
-	Key       string
-	Content   string
-	UpdatedAt time.Time
+        ID        int
+        Key       string
+        Content   string
+        UpdatedAt time.Time
 }
 
 func (d *DB) PutMemory(ctx context.Context, projectID int, key, content string) error {
-	_, err := d.pool.Exec(ctx,
-		`INSERT INTO memories (project_id, key, content, updated_at)
-         VALUES ($1,$2,$3,NOW())
+        _, err := d.db.ExecContext(ctx,
+                `INSERT INTO memories (project_id, key, content, updated_at)
+         VALUES (?,?,?,CURRENT_TIMESTAMP)
          ON CONFLICT (project_id, key)
-         DO UPDATE SET content=EXCLUDED.content, updated_at=NOW()`,
-		projectID, key, content)
-	return err
+         DO UPDATE SET content=excluded.content, updated_at=CURRENT_TIMESTAMP`,
+                projectID, key, content)
+        return err
 }
 
 func (d *DB) GetMemory(ctx context.Context, projectID int, key string) (*Memory, error) {
-	var m Memory
-	err := d.pool.QueryRow(ctx,
-		`SELECT id, key, content, updated_at FROM memories
-         WHERE project_id=$1 AND key=$2`, projectID, key).
-		Scan(&m.ID, &m.Key, &m.Content, &m.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &m, nil
+        var m Memory
+        var updStr string
+        err := d.db.QueryRowContext(ctx,
+                `SELECT id, key, content, updated_at FROM memories
+         WHERE project_id=? AND key=?`, projectID, key).
+                Scan(&m.ID, &m.Key, &m.Content, &updStr)
+        if errors.Is(err, sql.ErrNoRows) {
+                return nil, ErrNotFound
+        }
+        if err != nil {
+                return nil, err
+        }
+        m.UpdatedAt, err = parseDateTime(updStr)
+        if err != nil {
+                return nil, fmt.Errorf("parse updated_at: %w", err)
+        }
+        return &m, nil
 }
 
 func (d *DB) ListMemories(ctx context.Context, projectID int) ([]Memory, error) {
-	rows, err := d.pool.Query(ctx,
-		`SELECT id, key, content, updated_at FROM memories
-         WHERE project_id=$1 ORDER BY updated_at DESC`, projectID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Memory
-	for rows.Next() {
-		var m Memory
-		if err := rows.Scan(&m.ID, &m.Key, &m.Content, &m.UpdatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
+        rows, err := d.db.QueryContext(ctx,
+                `SELECT id, key, content, updated_at FROM memories
+         WHERE project_id=? ORDER BY updated_at DESC`, projectID)
+        if err != nil {
+                return nil, err
+        }
+        defer rows.Close()
+        var out []Memory
+        for rows.Next() {
+                var m Memory
+                var updStr string
+                if scanErr := rows.Scan(&m.ID, &m.Key, &m.Content, &updStr); scanErr != nil {
+                        return nil, scanErr
+                }
+                var parseErr error
+                m.UpdatedAt, parseErr = parseDateTime(updStr)
+                if parseErr != nil {
+                        return nil, fmt.Errorf("parse updated_at: %w", parseErr)
+                }
+                out = append(out, m)
+        }
+        return out, rows.Err()
 }
 
 func (d *DB) DeleteMemory(ctx context.Context, projectID int, key string) error {
-	_, err := d.pool.Exec(ctx,
-		"DELETE FROM memories WHERE project_id=$1 AND key=$2", projectID, key)
-	return err
+        _, err := d.db.ExecContext(ctx,
+                "DELETE FROM memories WHERE project_id=? AND key=?", projectID, key)
+        return err
+}
+
+// parseDateTime handles SQLite datetime strings in multiple formats.
+func parseDateTime(s string) (time.Time, error) {
+        formats := []string{
+                time.RFC3339,
+                "2006-01-02T15:04:05Z",
+                "2006-01-02 15:04:05",
+                "2006-01-02 15:04:05Z",
+        }
+        for _, f := range formats {
+                if t, err := time.Parse(f, s); err == nil {
+                        return t, nil
+                }
+        }
+        return time.Time{}, fmt.Errorf("unrecognised datetime format: %q", s)
 }
