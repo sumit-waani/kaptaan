@@ -37,14 +37,10 @@ Open the browser-based SSH console and run the two commands below.
 Replace `ghp_YOUR_TOKEN_HERE` with your actual GitHub PAT both times.
 
 ```bash
-# Download the install script (token needed — private repo)
 curl -fsSL \
   -H "Authorization: token ghp_YOUR_TOKEN_HERE" \
-  https://raw.githubusercontent.com/cto-agent/cto-agent/main/install.sh \
+  https://raw.githubusercontent.com/sumit-waani/kaptaan/main/install.sh \
   -o /tmp/install.sh
-
-# Run it
-sudo GITHUB_TOKEN=ghp_YOUR_TOKEN_HERE bash /tmp/install.sh
 ```
 
 That's it. The script will:
