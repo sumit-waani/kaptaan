@@ -349,20 +349,24 @@ func (t *turn) appendToolResult(id, output string) {
 // ensureSandbox returns the persistent sandbox. On first call it tries to
 // resume a previously paused sandbox (ID stored in DB), falling back to
 // creating a fresh one if none exists or the saved ID is stale.
+//
+// The entire check-and-create sequence runs under sbMu to prevent a race
+// where two parallel tool calls both see no sandbox and both spin up a new
+// E2B instance simultaneously.
 func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime, error) {
         a.sbMu.Lock()
-        ps := a.sandboxes[projectID]
-        a.sbMu.Unlock()
-        if ps != nil {
+        defer a.sbMu.Unlock()
+
+        // Re-check inside the lock — another goroutine may have created it
+        // while we were waiting to acquire.
+        if ps := a.sandboxes[projectID]; ps != nil {
                 // Quick health-check: if envd is unreachable (paused/killed by E2B in-session),
                 // drop the stale entry and fall through to reconnect via DB.
                 if sr, ok := ps.runtime.(*tools.SandboxRuntime); ok && sr.Sandbox.Ping(ctx) {
                         return ps.runtime, nil
                 }
                 log.Printf("[agent] in-memory sandbox is unreachable — reconnecting")
-                a.sbMu.Lock()
                 delete(a.sandboxes, projectID)
-                a.sbMu.Unlock()
         }
 
         e2bKey := a.db.GetConfig(ctx, "e2b_api_key")
@@ -389,10 +393,7 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                                         log.Printf("[agent] git sync failed: %s", r.Output)
                                 }
                         }
-                        ps = &projectSandbox{runtime: runtime, branch: "kaptaan"}
-                        a.sbMu.Lock()
-                        a.sandboxes[projectID] = ps
-                        a.sbMu.Unlock()
+                        a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
                         a.hooks.Send(projectID, "✅ sandbox reconnected, branch: `kaptaan`")
                         return runtime, nil
                 }
@@ -448,10 +449,7 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 }
         }
 
-        ps = &projectSandbox{runtime: runtime, branch: "kaptaan"}
-        a.sbMu.Lock()
-        a.sandboxes[projectID] = ps
-        a.sbMu.Unlock()
+        a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
         return runtime, nil
 }
 
