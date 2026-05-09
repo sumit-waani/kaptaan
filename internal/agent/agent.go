@@ -248,7 +248,6 @@ func (a *Agent) runLoop(ctx context.Context, projectID int, text string) error {
 // It writes turn.local[turn.baseLen:] — everything added during the current turn.
 func (a *Agent) commitTurn(projectID int, t *turn) {
         ctx := context.Background()
-        ts := time.Now().Format("15:04:05")
         newMsgs := t.local[t.baseLen:]
 
         // Apply a cap: if total stored would exceed 199, prune oldest from DB first.
@@ -264,15 +263,11 @@ func (a *Agent) commitTurn(projectID int, t *turn) {
         for _, m := range newMsgs {
                 tcJSON := db.ToolCallsToJSON(m.ToolCalls)
 
-                // Determine UI fields: only user and final assistant messages are visible.
-                uiType, uiText, uiTs := "", "", ""
-                if m.Role == "user" {
-                        uiType = "user"
-                        uiText = m.Content
-                        uiTs = ts
-                }
-                // Final assistant messages are handled by FinalizeStream (server writes UI row).
+                // UI fields: handleChat already persisted the user message as a UI row,
+                // so commitTurn must not write another one — that would cause duplicates
+                // on SSE reconnect. Final assistant messages are handled by FinalizeStream.
                 // Tool results and intermediate assistant messages have no UI row.
+                uiType, uiText, uiTs := "", "", ""
 
                 if err := a.db.AppendMessage(ctx, projectID,
                         m.Role, m.Content, m.ReasoningContent, m.ToolCallID, tcJSON,
@@ -376,9 +371,9 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
         }
 
         // Try to reconnect to a previously saved (paused) sandbox.
-        if mem, err := a.db.GetMemory(ctx, projectID, "_sandbox_id"); err == nil && mem.Content != "" {
+        if savedID := a.db.GetConfig(ctx, "_sandbox_id"); savedID != "" {
                 a.hooks.Send(projectID, "🔄 reconnecting to saved sandbox…")
-                sb, err := sandbox.Connect(ctx, e2bKey, mem.Content)
+                sb, err := sandbox.Connect(ctx, e2bKey, savedID)
                 if err == nil {
                         runtime := &tools.SandboxRuntime{
                                 Sandbox: sb,
@@ -403,7 +398,7 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 }
                 // Saved ID is stale — fall through to create a fresh sandbox.
                 log.Printf("[agent] sandbox reconnect failed (%v) — creating new one", err)
-                _ = a.db.DeleteMemory(ctx, projectID, "_sandbox_id")
+                _ = a.db.SetConfig(ctx, "_sandbox_id", "")
         }
 
         a.hooks.Send(projectID, "🛠 spinning up sandbox…")
@@ -412,9 +407,10 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 return nil, fmt.Errorf("sandbox create: %w", err)
         }
 
-        // Persist sandbox reference for future reconnects.
+        // Persist sandbox reference for future reconnects (stored in config, not
+        // memories, so the agent cannot accidentally delete it).
         sandboxRef := sb.ID + ":" + sb.ClientID
-        if err := a.db.PutMemory(ctx, projectID, "_sandbox_id", sandboxRef); err != nil {
+        if err := a.db.SetConfig(ctx, "_sandbox_id", sandboxRef); err != nil {
                 log.Printf("[agent] failed to store sandbox id: %v", err)
         }
 
@@ -479,11 +475,11 @@ func (a *Agent) ReadScratchpad(ctx context.Context, projectID int) (string, erro
         if e2bKey == "" {
                 return "", fmt.Errorf("no active sandbox")
         }
-        mem, err := a.db.GetMemory(ctx, projectID, "_sandbox_id")
-        if err != nil || mem.Content == "" {
+        savedID := a.db.GetConfig(ctx, "_sandbox_id")
+        if savedID == "" {
                 return "", fmt.Errorf("no active sandbox — send a task first")
         }
-        sb, err := sandbox.Connect(ctx, e2bKey, mem.Content)
+        sb, err := sandbox.Connect(ctx, e2bKey, savedID)
         if err != nil {
                 return "", fmt.Errorf("sandbox unavailable: %w", err)
         }
@@ -513,8 +509,8 @@ func (a *Agent) resetSandbox(ctx context.Context, projectID int) {
         if ps != nil {
                 _ = ps.runtime.Close(ctx)
         }
-        // Remove saved sandbox ID so next ensureSandbox creates a fresh one.
-        _ = a.db.DeleteMemory(ctx, projectID, "_sandbox_id")
+        // Clear saved sandbox ID so next ensureSandbox creates a fresh one.
+        _ = a.db.SetConfig(ctx, "_sandbox_id", "")
 }
 
 // systemPrompt is rebuilt each turn so config and memory changes are current.
