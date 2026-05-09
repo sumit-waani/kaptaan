@@ -12,6 +12,11 @@ function kaptaan() {
     memories: [],
     credits: { loading: false, error: '', data: null },
     scratchpad: { loading: false, error: '', content: null },
+    cfg: {
+      values: { deepseek_api_key:'', deepseek_model:'', e2b_api_key:'', repo_url:'', github_token:'', system_prompt:'' },
+      show: { deepseek_api_key:false, e2b_api_key:false, github_token:false },
+      saving: false, saved: false, error: '',
+    },
     toolGroupsOpen: {},
     lastToolName: '',
 
@@ -203,6 +208,7 @@ function kaptaan() {
       this.showSettings = true;
       this.refreshSettings();
       this.loadScratchpad();
+      this.loadConfig();
     },
 
     closeSettings() {
@@ -227,6 +233,29 @@ function kaptaan() {
         return;
       }
       this.scratchpad = { loading: false, error: '', content: j.content };
+    },
+
+    async loadConfig() {
+      const j = await this.api('/api/config');
+      if (j.config) {
+        this.cfg.values = Object.assign(this.cfg.values, j.config);
+      }
+    },
+
+    async saveConfig() {
+      this.cfg.saving = true;
+      this.cfg.error = '';
+      for (const [key, value] of Object.entries(this.cfg.values)) {
+        const r = await this.api('/api/config', {method:'POST', body: JSON.stringify({key, value})});
+        if (r.error) {
+          this.cfg.error = r.error;
+          this.cfg.saving = false;
+          return;
+        }
+      }
+      this.cfg.saving = false;
+      this.cfg.saved = true;
+      setTimeout(() => { this.cfg.saved = false; }, 2500);
     },
 
     async checkCredits() {

@@ -1,7 +1,6 @@
 // Package agent is the single autonomous coding agent that powers Kaptaan.
-// Single project, driven by REPO_URL and GITHUB_TOKEN env vars.
-// Conversation is persisted to SQLite. Scratchpad.md in the sandbox is the
-// working memory for tasks. GitHub is the source of truth for PR/merge state.
+// Single project. All configuration (repo URL, tokens, etc.) is read from the
+// DB config table at runtime — no env vars required after first boot.
 package agent
 
 import (
@@ -10,7 +9,6 @@ import (
         "errors"
         "fmt"
         "log"
-        "os"
         "strings"
         "sync"
         "time"
@@ -50,10 +48,9 @@ type queuedMsg struct {
 
 // Agent owns conversation state and serialises calls.
 type Agent struct {
-        db     *db.DB
-        pool   *llm.Pool
-        hooks  Hooks
-        e2bKey string
+        db    *db.DB
+        pool  *llm.Pool
+        hooks Hooks
 
         mu      sync.Mutex
         running map[int]bool
@@ -64,12 +61,11 @@ type Agent struct {
         sandboxes map[int]*projectSandbox
 }
 
-func New(database *db.DB, pool *llm.Pool, e2bKey string, hooks Hooks) *Agent {
+func New(database *db.DB, pool *llm.Pool, hooks Hooks) *Agent {
         return &Agent{
                 db:        database,
                 pool:      pool,
                 hooks:     hooks,
-                e2bKey:    e2bKey,
                 running:   make(map[int]bool),
                 cancels:   make(map[int]context.CancelFunc),
                 queue:     make(chan queuedMsg, 1),
@@ -374,14 +370,15 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 a.sbMu.Unlock()
         }
 
-        if a.e2bKey == "" {
-                return nil, errors.New("E2B_API_KEY is not configured — sandbox tools are unavailable")
+        e2bKey := a.db.GetConfig(ctx, "e2b_api_key")
+        if e2bKey == "" {
+                return nil, errors.New("e2b_api_key is not configured — set it in Settings → Configuration")
         }
 
         // Try to reconnect to a previously saved (paused) sandbox.
         if mem, err := a.db.GetMemory(ctx, projectID, "_sandbox_id"); err == nil && mem.Content != "" {
                 a.hooks.Send(projectID, "🔄 reconnecting to saved sandbox…")
-                sb, err := sandbox.Connect(ctx, a.e2bKey, mem.Content)
+                sb, err := sandbox.Connect(ctx, e2bKey, mem.Content)
                 if err == nil {
                         runtime := &tools.SandboxRuntime{
                                 Sandbox: sb,
@@ -392,7 +389,7 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                                 },
                         }
                         // Sync with latest from origin/main on every reconnect.
-                        if os.Getenv("GITHUB_TOKEN") != "" {
+                        if a.db.GetConfig(ctx, "github_token") != "" {
                                 if r := runtime.Shell(ctx, "cd /home/user/workspace && git fetch origin && git merge origin/main --no-edit", 60); r.IsErr {
                                         log.Printf("[agent] git sync failed: %s", r.Output)
                                 }
@@ -410,7 +407,7 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
         }
 
         a.hooks.Send(projectID, "🛠 spinning up sandbox…")
-        sb, err := sandbox.Create(ctx, a.e2bKey, "base", 3600)
+        sb, err := sandbox.Create(ctx, e2bKey, "base", 3600)
         if err != nil {
                 return nil, fmt.Errorf("sandbox create: %w", err)
         }
@@ -434,8 +431,8 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 log.Printf("[agent] mkdir workspace: %s", r.Output)
         }
 
-        repoURL := normalizeRepoURL(os.Getenv("REPO_URL"))
-        githubToken := os.Getenv("GITHUB_TOKEN")
+        repoURL := normalizeRepoURL(a.db.GetConfig(ctx, "repo_url"))
+        githubToken := a.db.GetConfig(ctx, "github_token")
 
         if repoURL != "" && githubToken != "" {
                 cloneURL := injectToken(repoURL, githubToken)
@@ -478,14 +475,15 @@ func (a *Agent) ReadScratchpad(ctx context.Context, projectID int) (string, erro
         }
 
         // No in-memory sandbox — try to reconnect to a paused one from DB.
-        if a.e2bKey == "" {
+        e2bKey := a.db.GetConfig(ctx, "e2b_api_key")
+        if e2bKey == "" {
                 return "", fmt.Errorf("no active sandbox")
         }
         mem, err := a.db.GetMemory(ctx, projectID, "_sandbox_id")
         if err != nil || mem.Content == "" {
                 return "", fmt.Errorf("no active sandbox — send a task first")
         }
-        sb, err := sandbox.Connect(ctx, a.e2bKey, mem.Content)
+        sb, err := sandbox.Connect(ctx, e2bKey, mem.Content)
         if err != nil {
                 return "", fmt.Errorf("sandbox unavailable: %w", err)
         }
@@ -519,12 +517,26 @@ func (a *Agent) resetSandbox(ctx context.Context, projectID int) {
         _ = a.db.DeleteMemory(ctx, projectID, "_sandbox_id")
 }
 
-// systemPrompt is rebuilt each turn so memory changes are always current.
+// systemPrompt is rebuilt each turn so config and memory changes are current.
 func (t *turn) systemPrompt() string {
-        mems, _ := t.a.db.ListMemories(context.Background(), t.projectID)
+        ctx := context.Background()
+        mems, _ := t.a.db.ListMemories(ctx, t.projectID)
 
-        repoURL := normalizeRepoURL(os.Getenv("REPO_URL"))
-        githubToken := os.Getenv("GITHUB_TOKEN")
+        // If the user has set a custom system prompt, use it and append memories.
+        if custom := t.a.db.GetConfig(ctx, "system_prompt"); custom != "" {
+                var b strings.Builder
+                b.WriteString(custom)
+                if len(mems) > 0 {
+                        b.WriteString("\n\n## Stored memories\n")
+                        for _, m := range mems {
+                                fmt.Fprintf(&b, "- `%s` — %s\n", m.Key, truncate(m.Content, 120))
+                        }
+                }
+                return b.String()
+        }
+
+        repoURL := normalizeRepoURL(t.a.db.GetConfig(ctx, "repo_url"))
+        githubToken := t.a.db.GetConfig(ctx, "github_token")
 
         var b strings.Builder
         b.WriteString("You are **Kaptaan**, an autonomous coding agent.\n\n")
@@ -533,10 +545,10 @@ func (t *turn) systemPrompt() string {
         if repoURL != "" {
                 fmt.Fprintf(&b, "- repo: %s\n", repoURL)
         } else {
-                b.WriteString("- repo: (none — set REPO_URL env var)\n")
+                b.WriteString("- repo: (none — set repo_url in Settings → Configuration)\n")
         }
         if githubToken == "" {
-                b.WriteString("- github_token: (missing — PR ops disabled)\n")
+                b.WriteString("- github_token: (missing — set in Settings → Configuration — PR ops disabled)\n")
         }
         b.WriteString("- workdir in sandbox: /home/user/workspace\n\n")
 

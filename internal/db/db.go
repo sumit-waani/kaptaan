@@ -72,6 +72,12 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS messages_project_idx ON messages(project_id);
+
+CREATE TABLE IF NOT EXISTS config (
+    key        TEXT     PRIMARY KEY,
+    value      TEXT     NOT NULL DEFAULT '',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 func (d *DB) migrate() error {

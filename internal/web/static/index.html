@@ -247,6 +247,63 @@
             x-text="scratchpad.loading ? 'loading…' : 'refresh'"></button>
         </div>
 
+        <!-- Configuration -->
+        <div class="settings-section">
+          <div class="settings-section-label">configuration</div>
+          <div class="settings-card">
+            <div class="cfg-row">
+              <div class="cfg-label">deepseek api key</div>
+              <div class="cfg-input-wrap">
+                <input class="cfg-input" :type="cfg.show.deepseek_api_key ? 'text' : 'password'"
+                  x-model="cfg.values.deepseek_api_key" placeholder="sk-..." autocomplete="off" />
+                <button class="cfg-show-btn" @click="cfg.show.deepseek_api_key = !cfg.show.deepseek_api_key"
+                  x-text="cfg.show.deepseek_api_key ? 'hide' : 'show'"></button>
+              </div>
+            </div>
+            <div class="cfg-row">
+              <div class="cfg-label">deepseek model</div>
+              <div class="cfg-input-wrap">
+                <input class="cfg-input" type="text" x-model="cfg.values.deepseek_model" placeholder="deepseek-v4-pro" autocomplete="off" />
+              </div>
+            </div>
+            <div class="cfg-row">
+              <div class="cfg-label">e2b api key</div>
+              <div class="cfg-input-wrap">
+                <input class="cfg-input" :type="cfg.show.e2b_api_key ? 'text' : 'password'"
+                  x-model="cfg.values.e2b_api_key" placeholder="e2b_..." autocomplete="off" />
+                <button class="cfg-show-btn" @click="cfg.show.e2b_api_key = !cfg.show.e2b_api_key"
+                  x-text="cfg.show.e2b_api_key ? 'hide' : 'show'"></button>
+              </div>
+            </div>
+            <div class="cfg-row">
+              <div class="cfg-label">repository url</div>
+              <div class="cfg-input-wrap">
+                <input class="cfg-input" type="url" x-model="cfg.values.repo_url" placeholder="https://github.com/owner/repo" autocomplete="off" />
+              </div>
+            </div>
+            <div class="cfg-row" style="border-bottom:none">
+              <div class="cfg-label">github token</div>
+              <div class="cfg-input-wrap">
+                <input class="cfg-input" :type="cfg.show.github_token ? 'text' : 'password'"
+                  x-model="cfg.values.github_token" placeholder="ghp_..." autocomplete="off" />
+                <button class="cfg-show-btn" @click="cfg.show.github_token = !cfg.show.github_token"
+                  x-text="cfg.show.github_token ? 'hide' : 'show'"></button>
+              </div>
+            </div>
+          </div>
+          <div class="settings-section-label" style="margin-top:16px">
+            system prompt
+            <span style="font-size:10px;color:var(--dim);text-transform:none;letter-spacing:0">&nbsp;(empty = use built-in)</span>
+          </div>
+          <textarea class="cfg-textarea" x-model="cfg.values.system_prompt"
+            placeholder="Leave empty to use the built-in Kaptaan prompt. Paste a custom system prompt here to fully replace it." rows="5"></textarea>
+          <template x-if="cfg.error">
+            <div class="err-msg" x-text="cfg.error"></div>
+          </template>
+          <button class="action-btn primary" @click="saveConfig()" :disabled="cfg.saving"
+            x-text="cfg.saved ? '✓ saved' : (cfg.saving ? 'saving…' : 'save configuration')"></button>
+        </div>
+
         <!-- Memories -->
         <div class="settings-section">
           <div class="settings-section-label">memories</div>
