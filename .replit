@@ -42,3 +42,7 @@ build = ["bash", "-c", "GONOSUMDB='*' go build -o kaptaan ./cmd/kaptaan"]
 [userenv]
 
 [userenv.shared]
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 120000
