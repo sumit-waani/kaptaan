@@ -12,56 +12,98 @@ package llm
 // assistant messages in subsequent turns; dropping it causes a 400 error:
 // "The reasoning_content in the thinking mode must be passed back to the API."
 type Message struct {
-        Role             string     `json:"role"`
-        Content          string     `json:"content"`
-        ReasoningContent string     `json:"reasoning_content,omitempty"`
-        ToolCallID       string     `json:"tool_call_id,omitempty"`
-        ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	Role             string     `json:"role"`
+	Content          string     `json:"content"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // ToolCall is a function call requested by the model.
 type ToolCall struct {
-        ID       string `json:"id"`
-        Type     string `json:"type"`
-        Function struct {
-                Name      string `json:"name"`
-                Arguments string `json:"arguments"`
-        } `json:"function"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 // Response is the full API response.
 type Response struct {
-        Choices []Choice `json:"choices"`
-        Usage   struct {
-                PromptTokens     int `json:"prompt_tokens"`
-                CompletionTokens int `json:"completion_tokens"`
-                TotalTokens      int `json:"total_tokens"`
-        } `json:"usage"`
-        Error *struct {
-                Message string `json:"message"`
-        } `json:"error,omitempty"`
+	Choices []Choice `json:"choices"`
+	Usage   struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
 }
 
 // Choice is one completion candidate.
 type Choice struct {
-        Message      Message `json:"message"`
-        FinishReason string  `json:"finish_reason"`
+	Message      Message `json:"message"`
+	FinishReason string  `json:"finish_reason"`
 }
 
 // Tool defines a function the model can call.
 type Tool struct {
-        Type     string `json:"type"`
-        Function struct {
-                Name        string                 `json:"name"`
-                Description string                 `json:"description"`
-                Parameters  map[string]interface{} `json:"parameters"`
-        } `json:"function"`
+	Type     string `json:"type"`
+	Function struct {
+		Name        string                 `json:"name"`
+		Description string                 `json:"description"`
+		Parameters  map[string]interface{} `json:"parameters"`
+	} `json:"function"`
 }
 
 // UsageRecord is what gets persisted per call.
 type UsageRecord struct {
-        Provider         string
-        Model            string
-        PromptTokens     int
-        CompletionTokens int
+	Provider         string
+	Model            string
+	PromptTokens     int
+	CompletionTokens int
+}
+
+// ── Streaming types ──────────────────────────────────────────────────────────
+
+// StreamChunk is one SSE chunk from a streaming DeepSeek response.
+type StreamChunk struct {
+	Choices []StreamChoice `json:"choices"`
+	Usage   *StreamUsage   `json:"usage"`
+	Error   *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+// StreamChoice is one choice delta within a StreamChunk.
+type StreamChoice struct {
+	Delta        StreamDelta `json:"delta"`
+	FinishReason string      `json:"finish_reason"`
+}
+
+// StreamDelta carries the incremental content for one chunk.
+type StreamDelta struct {
+	Role             string            `json:"role"`
+	Content          string            `json:"content"`
+	ReasoningContent string            `json:"reasoning_content"`
+	ToolCalls        []StreamToolCall  `json:"tool_calls"`
+}
+
+// StreamToolCall is one tool-call delta, keyed by Index for accumulation.
+type StreamToolCall struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// StreamUsage carries token counts (sent on the final chunk by DeepSeek).
+type StreamUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
 }

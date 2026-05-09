@@ -44,9 +44,12 @@ func main() {
 	log.Println("✅ LLM pool ready")
 
 	a := agent.New(database, pool, os.Getenv("E2B_API_KEY"), agent.Hooks{
-		Send:        server.SendToProject,
-		Ask:         server.AskProject,
-		NotifyState: server.NotifyAgentState,
+		Send:           server.SendToProject,
+		Ask:            server.AskProject,
+		NotifyState:    server.NotifyAgentState,
+		Token:          server.SendToken,
+		CancelStream:   server.CancelStream,
+		FinalizeStream: server.FinalizeStream,
 	})
 	server.SetAgent(a)
 

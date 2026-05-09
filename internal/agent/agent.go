@@ -27,9 +27,12 @@ const fixedProjectID = 1
 
 // Hooks are the small set of UI callbacks the agent invokes.
 type Hooks struct {
-        Send        func(projectID int, text string)
-        Ask         func(projectID int, question string) string
-        NotifyState func(projectID int)
+        Send           func(projectID int, text string)
+        Ask            func(projectID int, question string) string
+        NotifyState    func(projectID int)
+        Token          func(projectID int, token string)
+        CancelStream   func(projectID int)
+        FinalizeStream func(projectID int)
 }
 
 // projectSandbox is the live E2B sandbox, shared across all turns until
@@ -37,6 +40,12 @@ type Hooks struct {
 type projectSandbox struct {
         runtime tools.Runtime
         branch  string
+}
+
+// queuedMsg holds a message waiting to be processed after the current task.
+type queuedMsg struct {
+        projectID int
+        text      string
 }
 
 // Agent owns conversation state and serialises calls.
@@ -49,6 +58,7 @@ type Agent struct {
         mu      sync.Mutex
         convo   map[int][]llm.Message
         running map[int]bool
+        queue   chan queuedMsg // depth-1 queue for messages arriving while busy
 
         sbMu      sync.Mutex
         sandboxes map[int]*projectSandbox
@@ -62,6 +72,7 @@ func New(database *db.DB, pool *llm.Pool, e2bKey string, hooks Hooks) *Agent {
                 e2bKey:    e2bKey,
                 convo:     make(map[int][]llm.Message),
                 running:   make(map[int]bool),
+                queue:     make(chan queuedMsg, 1),
                 sandboxes: make(map[int]*projectSandbox),
         }
 }
@@ -72,6 +83,11 @@ func (a *Agent) IsRunning(projectID int) bool {
         return a.running[projectID]
 }
 
+// HasQueued reports whether a message is sitting in the queue for this project.
+func (a *Agent) HasQueued(projectID int) bool {
+        return len(a.queue) > 0
+}
+
 func (a *Agent) ResetConversation(projectID int) {
         a.mu.Lock()
         delete(a.convo, projectID)
@@ -79,16 +95,43 @@ func (a *Agent) ResetConversation(projectID int) {
 }
 
 // HandleUserMessage processes one user turn end-to-end. Blocking.
+// If the agent is already running, the message is queued (depth 1) and
+// processed immediately after the current task finishes.
 func (a *Agent) HandleUserMessage(ctx context.Context, projectID int, text string) error {
         a.mu.Lock()
         if a.running[projectID] {
                 a.mu.Unlock()
-                return errors.New("agent is already working on this project")
+                select {
+                case a.queue <- queuedMsg{projectID: projectID, text: text}:
+                        a.hooks.Send(projectID, "📥 Queued — will process after current task.")
+                        if a.hooks.NotifyState != nil {
+                                a.hooks.NotifyState(projectID)
+                        }
+                        return nil
+                default:
+                        return errors.New("queue is full — please wait for the current task to finish")
+                }
         }
         a.running[projectID] = true
         a.mu.Unlock()
 
+        return a.runLoop(ctx, projectID, text)
+}
+
+// runLoop processes text, then drains the queue before releasing the running flag.
+func (a *Agent) runLoop(ctx context.Context, projectID int, text string) error {
         defer func() {
+                // Check queue before releasing the running flag.
+                select {
+                case next := <-a.queue:
+                        if a.hooks.NotifyState != nil {
+                                a.hooks.NotifyState(projectID)
+                        }
+                        // Stay running and process the queued message.
+                        _ = a.runLoop(ctx, next.projectID, next.text)
+                        return
+                default:
+                }
                 a.mu.Lock()
                 a.running[projectID] = false
                 a.mu.Unlock()
@@ -96,6 +139,7 @@ func (a *Agent) HandleUserMessage(ctx context.Context, projectID int, text strin
                         a.hooks.NotifyState(projectID)
                 }
         }()
+
         if a.hooks.NotifyState != nil {
                 a.hooks.NotifyState(projectID)
         }
@@ -105,7 +149,12 @@ func (a *Agent) HandleUserMessage(ctx context.Context, projectID int, text strin
 
         const maxIterations = 200
         for i := 0; i < maxIterations; i++ {
-                resp, err := a.pool.Chat(ctx, turn.messages(), turn.toolDefs())
+                // Stream all LLM responses; cancel the stream visually if tool calls follow.
+                resp, err := a.pool.ChatStream(ctx, turn.messages(), turn.toolDefs(), func(token string) {
+                        if a.hooks.Token != nil {
+                                a.hooks.Token(projectID, token)
+                        }
+                })
                 if err != nil {
                         a.hooks.Send(projectID, "❌ LLM error: "+err.Error())
                         return err
@@ -114,24 +163,48 @@ func (a *Agent) HandleUserMessage(ctx context.Context, projectID int, text strin
                 turn.appendAssistant(choice)
 
                 if len(choice.ToolCalls) == 0 {
+                        // Final response — finalize the streaming bubble on the frontend.
                         if strings.TrimSpace(choice.Content) != "" {
-                                a.hooks.Send(projectID, choice.Content)
+                                if a.hooks.FinalizeStream != nil {
+                                        a.hooks.FinalizeStream(projectID)
+                                }
                         }
                         a.commitTurn(projectID, turn)
                         return nil
+                }
+
+                // Intermediate response with tool calls — discard any streamed content.
+                if a.hooks.CancelStream != nil {
+                        a.hooks.CancelStream(projectID)
                 }
 
                 if pre := strings.TrimSpace(choice.Content); pre != "" {
                         a.hooks.Send(projectID, pre)
                 }
 
-                for _, call := range choice.ToolCalls {
-                                log.Printf("[tool] → %s %s", call.Function.Name, truncate(call.Function.Arguments, 200))
+                // ── Parallel tool dispatch ────────────────────────────────────────────
+                type toolResult struct {
+                        id     string
+                        output string
+                }
+                results := make([]toolResult, len(choice.ToolCalls))
+                var wg sync.WaitGroup
+                for idx, call := range choice.ToolCalls {
+                        wg.Add(1)
+                        go func(i int, c llm.ToolCall) {
+                                defer wg.Done()
+                                log.Printf("[tool] → %s %s", c.Function.Name, truncate(c.Function.Arguments, 200))
                                 tStart := time.Now()
-                                out := turn.dispatch(ctx, call)
-                                log.Printf("[tool] ← %s %.1fs | %s", call.Function.Name, time.Since(tStart).Seconds(), truncate(out, 150))
-                                turn.appendToolResult(call.ID, out)
-                        }
+                                out := turn.dispatch(ctx, c)
+                                log.Printf("[tool] ← %s %.1fs | %s", c.Function.Name, time.Since(tStart).Seconds(), truncate(out, 150))
+                                results[i] = toolResult{id: c.ID, output: out}
+                        }(idx, call)
+                }
+                wg.Wait()
+
+                for _, r := range results {
+                        turn.appendToolResult(r.id, r.output)
+                }
         }
         a.hooks.Send(projectID, "⚠️ Reached the iteration limit for this turn. Send another message to continue.")
         a.commitTurn(projectID, turn)
@@ -142,8 +215,9 @@ func (a *Agent) commitTurn(projectID int, t *turn) {
         a.mu.Lock()
         defer a.mu.Unlock()
         msgs := t.local
-        if len(msgs) > 80 {
-                msgs = append([]llm.Message{msgs[0]}, msgs[len(msgs)-79:]...)
+        // Keep system message + last 199 messages (total cap: 200).
+        if len(msgs) > 200 {
+                msgs = append([]llm.Message{msgs[0]}, msgs[len(msgs)-199:]...)
         }
         a.convo[projectID] = msgs
 }
@@ -395,7 +469,8 @@ func (t *turn) systemPrompt() string {
         b.WriteString("- Do NOT create plan files. Use scratchpad.md as your working memory.\n")
         b.WriteString("- For docs in the repo: use `read_file` and `grep_repo` directly on the /docs folder.\n")
         b.WriteString("- Use `send` to give progress updates. Use `ask` ONLY when genuinely blocked.\n")
-        b.WriteString("- Use `write_memory` to persist long-lived facts (architecture decisions, conventions).\n\n")
+        b.WriteString("- Use `write_memory` to persist long-lived facts (architecture decisions, conventions).\n")
+        b.WriteString("- When multiple independent operations are needed (e.g. reading several files), call all tools in one turn.\n\n")
 
         b.WriteString("## Sandbox & git workflow\n")
         b.WriteString("- The sandbox persists across turns (and across server restarts via pause/resume).\n")
@@ -580,57 +655,36 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
 
         case "reset_sandbox":
                 t.a.resetSandbox(ctx, t.projectID)
-                return "sandbox closed. Next tool call that needs it will spin up a fresh one with a clean clone."
+                return "sandbox reset"
 
         default:
-                return "ERROR: unknown tool " + name
+                return fmt.Sprintf("ERROR: unknown tool %q", name)
         }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func getStr(args map[string]interface{}, key string) string {
+        v, _ := args[key].(string)
+        return v
+}
+
+func getInt(args map[string]interface{}, key string, def int) int {
+        switch v := args[key].(type) {
+        case float64:
+                return int(v)
+        case int:
+                return v
+        }
+        return def
 }
 
 func summariseArgs(args map[string]interface{}) string {
         if len(args) == 0 {
                 return ""
         }
-        parts := []string{}
-        for k, v := range args {
-                s := fmt.Sprintf("%v", v)
-                if len(s) > 60 {
-                        s = s[:60] + "…"
-                }
-                parts = append(parts, k+"="+s)
-        }
-        return "(" + strings.Join(parts, ", ") + ")"
-}
-
-func getStr(m map[string]interface{}, k string) string {
-        if v, ok := m[k]; ok {
-                if s, ok := v.(string); ok {
-                        return s
-                }
-        }
-        return ""
-}
-
-func getInt(m map[string]interface{}, k string, def int) int {
-        if v, ok := m[k]; ok {
-                switch n := v.(type) {
-                case float64:
-                        return int(n)
-                case int:
-                        return n
-                case string:
-                        var i int
-                        _, _ = fmt.Sscanf(n, "%d", &i)
-                        if i != 0 {
-                                return i
-                        }
-                }
-        }
-        return def
-}
-
-func shellQuote(s string) string {
-        return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+        b, _ := json.Marshal(args)
+        return truncate(string(b), 120)
 }
 
 func truncate(s string, n int) string {
@@ -640,28 +694,34 @@ func truncate(s string, n int) string {
         return s[:n] + "…"
 }
 
-func normalizeRepoURL(u string) string {
-        u = strings.TrimSpace(u)
-        if u == "" {
+// shellQuote wraps s in single quotes, escaping any existing single quotes.
+func shellQuote(s string) string {
+        return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// normalizeRepoURL strips any embedded credentials from a repo URL so it is
+// safe to include in the system prompt.
+func normalizeRepoURL(raw string) string {
+        raw = strings.TrimSpace(raw)
+        if raw == "" {
                 return ""
         }
-        if strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "git@") {
-                return u
+        // Strip https://user:token@github.com/... → https://github.com/...
+        if idx := strings.Index(raw, "@"); idx != -1 && strings.HasPrefix(raw, "https://") {
+                raw = "https://" + raw[idx+1:]
         }
-        if strings.HasPrefix(u, "github.com/") {
-                return "https://" + u
-        }
-        if !strings.Contains(u, "://") && strings.Count(u, "/") == 1 {
-                return "https://github.com/" + u
-        }
-        return u
+        return strings.TrimSuffix(raw, ".git")
 }
 
+// injectToken returns a clone URL with the GitHub token embedded for
+// authenticated git operations: https://TOKEN@github.com/owner/repo.git
 func injectToken(repoURL, token string) string {
-        if token == "" || !strings.HasPrefix(repoURL, "https://") {
-                return repoURL
+        repoURL = strings.TrimSpace(repoURL)
+        repoURL = strings.TrimSuffix(repoURL, ".git")
+        // Strip any existing credentials first.
+        if idx := strings.Index(repoURL, "@"); idx != -1 && strings.HasPrefix(repoURL, "https://") {
+                repoURL = "https://" + repoURL[idx+1:]
         }
-        return "https://x-access-token:" + token + "@" + strings.TrimPrefix(repoURL, "https://")
+        repoURL = strings.TrimPrefix(repoURL, "https://")
+        return "https://" + token + "@" + repoURL + ".git"
 }
-
-var _ = os.Stdout
