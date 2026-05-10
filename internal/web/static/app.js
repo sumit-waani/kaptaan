@@ -25,10 +25,30 @@ function kaptaan() {
     isStreaming: false,
 
     async init() {
-      const s = await fetch('/api/auth/status').then(r=>r.json());
-      this.auth.hasUser  = s.hasUser;
-      this.auth.loggedIn = s.loggedIn;
+      try {
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), 5000);
+        let s = {};
+        try {
+          s = await fetch('/api/auth/status', {signal: controller.signal}).then(r=>r.json());
+        } finally {
+          clearTimeout(tid);
+        }
+        this.auth.hasUser  = s.hasUser  || false;
+        this.auth.loggedIn = s.loggedIn || false;
+      } catch(_) {
+        this.auth.hasUser  = false;
+        this.auth.loggedIn = false;
+      }
+      if (this.auth.loggedIn) await this.loadHistory();
       if (this.auth.loggedIn) this.bootApp();
+    },
+
+    async loadHistory() {
+      try {
+        const j = await fetch('/api/history').then(r=>r.json());
+        if (j.messages) this.messages = j.messages;
+      } catch(_) {}
     },
 
     async signup() {
@@ -68,19 +88,23 @@ function kaptaan() {
           }
         }).catch(()=>{});
       });
-      this.sse.addEventListener('msg', e => this.onMsg(JSON.parse(e.data)));
+      this.sse.addEventListener('msg', e => { try { this.onMsg(JSON.parse(e.data)); } catch(_) {} });
       this.sse.addEventListener('state', e => {
-        const s = JSON.parse(e.data);
-        this.agentRunning = s.running;
-        this.hasQueued = s.queued || false;
-        if (!s.running) { this.lastToolName = ''; this.cancellingTask = false; }
+        try {
+          const s = JSON.parse(e.data);
+          this.agentRunning = s.running;
+          this.hasQueued = s.queued || false;
+          if (!s.running) { this.lastToolName = ''; this.cancellingTask = false; }
+        } catch(_) {}
       });
-      this.sse.addEventListener('ask_state', e => { this.askActive = JSON.parse(e.data).active; });
+      this.sse.addEventListener('ask_state', e => { try { this.askActive = JSON.parse(e.data).active; } catch(_) {} });
       this.sse.addEventListener('token', e => {
-        const d = JSON.parse(e.data);
-        this.isStreaming = true;
-        this.streamingText += d.text;
-        this._scrollFeed();
+        try {
+          const d = JSON.parse(e.data);
+          this.isStreaming = true;
+          this.streamingText += d.text;
+          this._scrollFeed();
+        } catch(_) {}
       });
       this.sse.addEventListener('stream_cancel', () => {
         this.streamingText = '';

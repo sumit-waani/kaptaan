@@ -260,6 +260,7 @@ func (s *Server) Start(ctx context.Context) {
         mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
         mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
 
+        mux.HandleFunc("/api/history", s.requireAuth(s.handleHistory))
         mux.HandleFunc("/events", s.requireAuth(s.handleSSE))
         mux.HandleFunc("/api/chat", s.requireAuth(s.handleChat))
         mux.HandleFunc("/api/reply", s.requireAuth(s.handleReply))
@@ -307,6 +308,29 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 // ─── SSE ───────────────────────────────────────────────────────────────────
 
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet {
+                http.Error(w, "GET required", http.StatusMethodNotAllowed)
+                return
+        }
+        uiMsgs, err := s.db.LoadUIMessages(r.Context(), fixedProjectID)
+        if err != nil {
+                log.Printf("[web] LoadUIMessages (history): %v", err)
+                jsonErr(w, "failed to load history", http.StatusInternalServerError)
+                return
+        }
+        type msgItem struct {
+                Type string `json:"type"`
+                Text string `json:"text"`
+                Ts   string `json:"ts"`
+        }
+        items := make([]msgItem, 0, len(uiMsgs))
+        for _, m := range uiMsgs {
+                items = append(items, msgItem{Type: m.UIType, Text: m.UIText, Ts: m.UITs})
+        }
+        jsonOK(w, map[string]interface{}{"messages": items})
+}
+
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
         flusher, ok := w.(http.Flusher)
         if !ok {
@@ -318,22 +342,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Connection", "keep-alive")
         w.Header().Set("X-Accel-Buffering", "no")
 
-        // Replay persisted UI messages from DB before joining the live stream.
-        uiMsgs, err := s.db.LoadUIMessages(r.Context(), fixedProjectID)
-        if err != nil {
-                log.Printf("[web] LoadUIMessages: %v", err)
-        }
-        for _, m := range uiMsgs {
-                payload, _ := json.Marshal(map[string]string{
-                        "type": m.UIType,
-                        "text": m.UIText,
-                        "ts":   m.UITs,
-                })
-                fmt.Fprintf(w, "event: msg\ndata: %s\n\n", payload)
-        }
-
-        // Increased channel buffer (256) to reduce drops for fast-producing agents.
-        c := &sseClient{projectID: fixedProjectID, ch: make(chan string, 256)}
+        c := &sseClient{projectID: fixedProjectID, ch: make(chan string, 1024)}
         s.hub.add(c)
         defer s.hub.remove(c)
 
