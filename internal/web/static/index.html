@@ -8,326 +8,175 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <title>Kaptaan</title>
 <link rel="stylesheet" href="/static/app.css" />
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
 </head>
 <body>
-<div x-data="kaptaan()" x-init="init()" x-cloak>
 
-  <!-- ── Auth ─────────────────────────────────────────────────────────────── -->
-  <template x-if="!auth.loggedIn">
-    <div class="auth-wrap">
-      <div class="auth-card">
-        <div class="auth-logo">
-          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-            <circle cx="14" cy="8" r="3" stroke="#f2f2f7" stroke-width="1.5"/>
-            <line x1="14" y1="11" x2="14" y2="22" stroke="#f2f2f7" stroke-width="1.5" stroke-linecap="round"/>
-            <line x1="7" y1="16" x2="21" y2="16" stroke="#f2f2f7" stroke-width="1.5" stroke-linecap="round"/>
-            <path d="M7 22 Q14 26 21 22" stroke="#f2f2f7" stroke-width="1.5" fill="none" stroke-linecap="round"/>
-          </svg>
-          <span>kaptaan</span>
+<!-- ── Auth ──────────────────────────────────────────────────────────────── -->
+<div id="view-auth" class="auth-wrap" style="display:none">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <circle cx="14" cy="8" r="3" stroke="#f2f2f7" stroke-width="1.5"/>
+        <line x1="14" y1="11" x2="14" y2="22" stroke="#f2f2f7" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="7" y1="16" x2="21" y2="16" stroke="#f2f2f7" stroke-width="1.5" stroke-linecap="round"/>
+        <path d="M7 22 Q14 26 21 22" stroke="#f2f2f7" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+      </svg>
+      <span>kaptaan</span>
+    </div>
+    <p class="auth-sub" id="auth-sub">sign in to continue.</p>
+    <input id="auth-username" class="auth-field" type="text" placeholder="username" autocomplete="username" autocapitalize="none" spellcheck="false" />
+    <input id="auth-password" class="auth-field" type="password" placeholder="password" autocomplete="current-password" />
+    <p id="auth-error" class="auth-err" style="display:none"></p>
+    <button id="auth-btn" class="btn-primary">sign in</button>
+  </div>
+</div>
+
+<!-- ── Main app ───────────────────────────────────────────────────────────── -->
+<div id="view-app" class="app" style="display:none">
+
+  <header class="header">
+    <div class="header-icon">
+      <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+        <circle cx="14" cy="8" r="3" stroke="#f2f2f7" stroke-width="1.5"/>
+        <line x1="14" y1="11" x2="14" y2="22" stroke="#f2f2f7" stroke-width="1.5" stroke-linecap="round"/>
+        <line x1="7" y1="16" x2="21" y2="16" stroke="#f2f2f7" stroke-width="1.5" stroke-linecap="round"/>
+        <path d="M7 22 Q14 26 21 22" stroke="#f2f2f7" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="header-title">kaptaan</div>
+    <div class="status-pill">
+      <div id="status-dot" class="status-dot idle"></div>
+      <span id="status-text">idle</span>
+    </div>
+    <button id="stop-btn" class="stop-btn" style="display:none" title="stop task">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+        <rect x="1" y="1" width="10" height="10" rx="2"/>
+      </svg>
+    </button>
+    <button id="settings-btn" class="icon-btn">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8e8e93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+  </header>
+
+  <div id="feed" class="feed"></div>
+
+  <div id="ask-banner" class="ask-banner" style="display:none">
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="#8e8e93">
+      <circle cx="6" cy="6" r="5" stroke="#8e8e93" stroke-width="1.2" fill="none"/>
+      <line x1="6" y1="5" x2="6" y2="8" stroke="#8e8e93" stroke-width="1.2" stroke-linecap="round"/>
+      <circle cx="6" cy="3.5" r="0.6" fill="#8e8e93"/>
+    </svg>
+    <span>waiting for your reply</span>
+  </div>
+
+  <div id="queued-banner" class="queued-banner" style="display:none">
+    <span>📥 next message queued</span>
+  </div>
+
+  <div class="composer">
+    <textarea id="composer-input" class="composer-input" rows="1" placeholder="message kaptaan…"></textarea>
+    <button id="send-btn" class="send-btn" disabled>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="22" y1="2" x2="11" y2="13"/>
+        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+      </svg>
+    </button>
+  </div>
+
+</div>
+
+<!-- ── Settings ───────────────────────────────────────────────────────────── -->
+<div id="view-settings" class="settings-overlay" style="display:none">
+  <div class="settings-header">
+    <button id="settings-back-btn" class="back-btn">
+      <svg width="8" height="13" viewBox="0 0 8 14" fill="none">
+        <path d="M7 1L1 7L7 13" stroke="#aeaeb2" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      back
+    </button>
+    <span class="settings-title">settings</span>
+    <button id="logout-btn" class="back-btn" style="color:#ff453a">sign out</button>
+  </div>
+
+  <div class="settings-body">
+
+    <div class="settings-section">
+      <div class="settings-section-label">conversation</div>
+      <button id="clear-convo-btn" class="action-btn">clear conversation</button>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-label">deepseek credit</div>
+      <div class="settings-card" id="credits-display">
+        <div class="empty-list">press check to load balance</div>
+      </div>
+      <button id="check-credits-btn" class="action-btn">check credits</button>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-label">scratchpad</div>
+      <div id="scratchpad-display" class="empty-list" style="margin-bottom:8px">press refresh to load</div>
+      <button id="refresh-scratchpad-btn" class="action-btn">refresh</button>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-label">configuration</div>
+      <div class="settings-card">
+        <div class="cfg-row">
+          <div class="cfg-label">deepseek api key</div>
+          <div class="cfg-input-wrap">
+            <input id="cfg-deepseek-key" class="cfg-input" type="password" placeholder="sk-..." autocomplete="off" />
+            <button class="cfg-show-btn" data-target="cfg-deepseek-key">show</button>
+          </div>
         </div>
-        <p class="auth-sub" x-text="auth.hasUser ? 'sign in to continue.' : 'create your account.'"></p>
-        <input class="auth-field" type="text" placeholder="username" x-model="auth.username" autocomplete="username" autocapitalize="none" spellcheck="false" />
-        <input class="auth-field" type="password" placeholder="password" x-model="auth.password" autocomplete="current-password"
-          @keyup.enter="auth.hasUser ? login() : signup()" />
-        <template x-if="auth.error">
-          <p class="auth-err" x-text="auth.error"></p>
-        </template>
-        <button class="btn-primary" @click="auth.hasUser ? login() : signup()"
-          x-text="auth.hasUser ? 'sign in' : 'create account'"></button>
+        <div class="cfg-row">
+          <div class="cfg-label">deepseek model</div>
+          <div class="cfg-input-wrap">
+            <input id="cfg-deepseek-model" class="cfg-input" type="text" placeholder="deepseek-v4-pro" autocomplete="off" />
+          </div>
+        </div>
+        <div class="cfg-row">
+          <div class="cfg-label">e2b api key</div>
+          <div class="cfg-input-wrap">
+            <input id="cfg-e2b-key" class="cfg-input" type="password" placeholder="e2b_..." autocomplete="off" />
+            <button class="cfg-show-btn" data-target="cfg-e2b-key">show</button>
+          </div>
+        </div>
+        <div class="cfg-row">
+          <div class="cfg-label">repository url</div>
+          <div class="cfg-input-wrap">
+            <input id="cfg-repo-url" class="cfg-input" type="url" placeholder="https://github.com/owner/repo" autocomplete="off" />
+          </div>
+        </div>
+        <div class="cfg-row" style="border-bottom:none">
+          <div class="cfg-label">github token</div>
+          <div class="cfg-input-wrap">
+            <input id="cfg-github-token" class="cfg-input" type="password" placeholder="ghp_..." autocomplete="off" />
+            <button class="cfg-show-btn" data-target="cfg-github-token">show</button>
+          </div>
+        </div>
+      </div>
+      <div class="settings-section-label" style="margin-top:16px">
+        system prompt
+        <span style="font-size:10px;color:var(--dim);text-transform:none;letter-spacing:0">&nbsp;(empty = use built-in)</span>
+      </div>
+      <textarea id="cfg-system-prompt" class="cfg-textarea"
+        placeholder="Leave empty to use the built-in Kaptaan prompt. Paste a custom system prompt here to fully replace it." rows="5"></textarea>
+      <p id="cfg-error" class="err-msg" style="display:none"></p>
+      <button id="cfg-save-btn" class="action-btn primary">save configuration</button>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-label">memories</div>
+      <div class="settings-card" id="memories-list">
+        <div class="empty-list">no memories saved</div>
       </div>
     </div>
-  </template>
 
-  <!-- ── Main app ──────────────────────────────────────────────────────────── -->
-  <template x-if="auth.loggedIn && !showSettings">
-    <div class="app">
-
-      <!-- Header -->
-      <header class="header">
-        <div class="header-icon">
-          <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
-            <circle cx="14" cy="8" r="3" stroke="#f2f2f7" stroke-width="1.5"/>
-            <line x1="14" y1="11" x2="14" y2="22" stroke="#f2f2f7" stroke-width="1.5" stroke-linecap="round"/>
-            <line x1="7" y1="16" x2="21" y2="16" stroke="#f2f2f7" stroke-width="1.5" stroke-linecap="round"/>
-            <path d="M7 22 Q14 26 21 22" stroke="#f2f2f7" stroke-width="1.5" fill="none" stroke-linecap="round"/>
-          </svg>
-        </div>
-        <div class="header-title">kaptaan</div>
-        <div class="status-pill">
-          <div class="status-dot" :class="agentRunning ? 'running' : 'idle'"></div>
-          <span x-text="agentRunning ? ('running' + (lastToolName ? ' · ' + lastToolName : '')) : 'idle'"></span>
-        </div>
-        <template x-if="agentRunning">
-          <button class="stop-btn" :disabled="cancellingTask" @click="cancelTask()" title="stop task">
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
-              <rect x="1" y="1" width="10" height="10" rx="2"/>
-            </svg>
-          </button>
-        </template>
-        <button class="icon-btn" @click="openSettings()">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8e8e93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
-        </button>
-      </header>
-
-      <!-- Feed -->
-      <div class="feed" x-ref="feed">
-        <template x-if="messages.length === 0 && !isStreaming">
-          <div class="empty-state">
-            <svg width="40" height="40" viewBox="0 0 28 28" fill="none">
-              <circle cx="14" cy="8" r="3" stroke="#555" stroke-width="1.5"/>
-              <line x1="14" y1="11" x2="14" y2="22" stroke="#555" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="7" y1="16" x2="21" y2="16" stroke="#555" stroke-width="1.5" stroke-linecap="round"/>
-              <path d="M7 22 Q14 26 21 22" stroke="#555" stroke-width="1.5" fill="none" stroke-linecap="round"/>
-            </svg>
-            <p>send a message to start.</p>
-          </div>
-        </template>
-        <template x-if="messages.length > 0 || isStreaming">
-          <div class="feed-spacer"></div>
-        </template>
-        <template x-for="group in groupedMessages()" :key="group.gid">
-          <div>
-            <!-- Tool call group -->
-            <template x-if="group.kind === 'toolgroup'">
-              <div class="bubble-row agent">
-                <div class="tool-group">
-                  <div class="tool-group-header" @click="toggleToolGroup(group.gid)">
-                    <div class="tool-status-dot" :class="isLastToolGroup(group.gid) && agentRunning ? 'running' : ''"></div>
-                    <span class="tool-group-label" x-text="group.tools.length + (group.tools.length === 1 ? ' tool call' : ' tool calls')"></span>
-                    <span class="tool-group-toggle" :class="isToolGroupOpen(group.gid) ? 'open' : ''">▼</span>
-                  </div>
-                  <template x-if="isToolGroupOpen(group.gid)">
-                    <div class="tool-rows">
-                      <template x-for="(t, ti) in group.tools" :key="ti">
-                        <div class="tool-row">
-                          <span class="tool-row-icon">⚡</span>
-                          <span class="tool-name" x-text="parseToolCall(t.text).name"></span>
-                          <span class="tool-args" x-text="parseToolCall(t.text).args"></span>
-                        </div>
-                      </template>
-                    </div>
-                  </template>
-                </div>
-              </div>
-            </template>
-            <!-- Regular message -->
-            <template x-if="group.kind === 'message'">
-              <div class="bubble-row" :class="group.msg.type === 'user' || group.msg.type === 'reply' ? 'user' : 'agent'">
-                <div class="bubble" :class="bubbleClass(group.msg)">
-                  <div class="bubble-meta" :class="group.msg.type === 'user' ? 'user-meta' : ''"
-                       x-text="bubbleLabel(group.msg) + ' · ' + group.msg.ts"></div>
-                  <div class="bubble-content" x-html="render(group.msg.text)"></div>
-                </div>
-              </div>
-            </template>
-          </div>
-        </template>
-
-        <!-- Streaming bubble — live token output -->
-        <template x-if="isStreaming && streamingText">
-          <div class="bubble-row agent">
-            <div class="bubble streaming-bubble">
-              <div class="bubble-meta">kaptaan · <span x-text="new Date().toTimeString().slice(0,8)"></span></div>
-              <div class="bubble-content" x-html="render(streamingText)"></div>
-            </div>
-          </div>
-        </template>
-
-        <!-- Thinking indicator — shown when running but not yet streaming -->
-        <template x-if="agentRunning && !isStreaming">
-          <div class="bubble-row agent">
-            <div class="thinking-dots">
-              <span></span><span></span><span></span>
-            </div>
-          </div>
-        </template>
-      </div>
-
-      <!-- Ask banner -->
-      <template x-if="askActive">
-        <div class="ask-banner">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="#8e8e93">
-            <circle cx="6" cy="6" r="5" stroke="#8e8e93" stroke-width="1.2" fill="none"/>
-            <line x1="6" y1="5" x2="6" y2="8" stroke="#8e8e93" stroke-width="1.2" stroke-linecap="round"/>
-            <circle cx="6" cy="3.5" r="0.6" fill="#8e8e93"/>
-          </svg>
-          <span>waiting for your reply</span>
-        </div>
-      </template>
-
-      <!-- Queued banner -->
-      <template x-if="hasQueued && !askActive">
-        <div class="queued-banner">
-          <span>📥 next message queued</span>
-        </div>
-      </template>
-
-      <!-- Composer -->
-      <div class="composer">
-        <textarea class="composer-input" x-model="composer" rows="1"
-          :placeholder="askActive ? 'type your reply…' : 'message kaptaan…'"
-          @keydown.meta.enter="send()"
-          @keydown.ctrl.enter="send()"
-          @input="autoResize($event)"></textarea>
-        <button class="send-btn" :disabled="!composer.trim()" @click="send()">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13"/>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-          </svg>
-        </button>
-      </div>
-
-    </div>
-  </template>
-
-  <!-- ── Settings ──────────────────────────────────────────────────────────── -->
-  <template x-if="auth.loggedIn && showSettings">
-    <div class="settings-overlay">
-      <div class="settings-header">
-        <button class="back-btn" @click="closeSettings()">
-          <svg width="8" height="13" viewBox="0 0 8 14" fill="none">
-            <path d="M7 1L1 7L7 13" stroke="#aeaeb2" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          back
-        </button>
-        <span class="settings-title">settings</span>
-        <button class="back-btn" style="color:#ff453a" @click="logout()">sign out</button>
-      </div>
-
-      <div class="settings-body">
-
-        <!-- Conversation -->
-        <div class="settings-section">
-          <div class="settings-section-label">conversation</div>
-          <button class="action-btn" @click="clearConvo()">clear conversation</button>
-        </div>
-
-        <!-- DeepSeek Credit -->
-        <div class="settings-section">
-          <div class="settings-section-label">deepseek credit</div>
-          <div class="settings-card">
-            <template x-if="credits.data && credits.data.balance_infos">
-              <template x-for="b in credits.data.balance_infos" :key="b.currency">
-                <div class="settings-row">
-                  <span class="settings-row-label" x-text="b.currency + ' balance'"></span>
-                  <span class="settings-row-value" x-text="b.total_balance"></span>
-                </div>
-              </template>
-            </template>
-            <template x-if="!credits.data">
-              <div class="empty-list">press check to load balance</div>
-            </template>
-            <template x-if="credits.error">
-              <div class="err-msg" x-text="credits.error"></div>
-            </template>
-          </div>
-          <button class="action-btn" @click="checkCredits()" :disabled="credits.loading"
-            x-text="credits.loading ? 'checking…' : 'check credits'"></button>
-        </div>
-
-        <!-- Scratchpad -->
-        <div class="settings-section">
-          <div class="settings-section-label">scratchpad</div>
-          <template x-if="scratchpad.error">
-            <div class="err-msg" x-text="scratchpad.error"></div>
-          </template>
-          <template x-if="scratchpad.content !== null && !scratchpad.loading && !scratchpad.error">
-            <pre class="scratchpad-block" x-text="scratchpad.content"></pre>
-          </template>
-          <template x-if="scratchpad.content === null && !scratchpad.loading && !scratchpad.error">
-            <div class="empty-list">press refresh to load</div>
-          </template>
-          <button class="action-btn" @click="loadScratchpad()" :disabled="scratchpad.loading"
-            x-text="scratchpad.loading ? 'loading…' : 'refresh'"></button>
-        </div>
-
-        <!-- Configuration -->
-        <div class="settings-section">
-          <div class="settings-section-label">configuration</div>
-          <div class="settings-card">
-            <div class="cfg-row">
-              <div class="cfg-label">deepseek api key</div>
-              <div class="cfg-input-wrap">
-                <input class="cfg-input" :type="cfg.show.deepseek_api_key ? 'text' : 'password'"
-                  x-model="cfg.values.deepseek_api_key" placeholder="sk-..." autocomplete="off" />
-                <button class="cfg-show-btn" @click="cfg.show.deepseek_api_key = !cfg.show.deepseek_api_key"
-                  x-text="cfg.show.deepseek_api_key ? 'hide' : 'show'"></button>
-              </div>
-            </div>
-            <div class="cfg-row">
-              <div class="cfg-label">deepseek model</div>
-              <div class="cfg-input-wrap">
-                <input class="cfg-input" type="text" x-model="cfg.values.deepseek_model" placeholder="deepseek-v4-pro" autocomplete="off" />
-              </div>
-            </div>
-            <div class="cfg-row">
-              <div class="cfg-label">e2b api key</div>
-              <div class="cfg-input-wrap">
-                <input class="cfg-input" :type="cfg.show.e2b_api_key ? 'text' : 'password'"
-                  x-model="cfg.values.e2b_api_key" placeholder="e2b_..." autocomplete="off" />
-                <button class="cfg-show-btn" @click="cfg.show.e2b_api_key = !cfg.show.e2b_api_key"
-                  x-text="cfg.show.e2b_api_key ? 'hide' : 'show'"></button>
-              </div>
-            </div>
-            <div class="cfg-row">
-              <div class="cfg-label">repository url</div>
-              <div class="cfg-input-wrap">
-                <input class="cfg-input" type="url" x-model="cfg.values.repo_url" placeholder="https://github.com/owner/repo" autocomplete="off" />
-              </div>
-            </div>
-            <div class="cfg-row" style="border-bottom:none">
-              <div class="cfg-label">github token</div>
-              <div class="cfg-input-wrap">
-                <input class="cfg-input" :type="cfg.show.github_token ? 'text' : 'password'"
-                  x-model="cfg.values.github_token" placeholder="ghp_..." autocomplete="off" />
-                <button class="cfg-show-btn" @click="cfg.show.github_token = !cfg.show.github_token"
-                  x-text="cfg.show.github_token ? 'hide' : 'show'"></button>
-              </div>
-            </div>
-          </div>
-          <div class="settings-section-label" style="margin-top:16px">
-            system prompt
-            <span style="font-size:10px;color:var(--dim);text-transform:none;letter-spacing:0">&nbsp;(empty = use built-in)</span>
-          </div>
-          <textarea class="cfg-textarea" x-model="cfg.values.system_prompt"
-            placeholder="Leave empty to use the built-in Kaptaan prompt. Paste a custom system prompt here to fully replace it." rows="5"></textarea>
-          <template x-if="cfg.error">
-            <div class="err-msg" x-text="cfg.error"></div>
-          </template>
-          <button class="action-btn primary" @click="saveConfig()" :disabled="cfg.saving"
-            x-text="cfg.saved ? '✓ saved' : (cfg.saving ? 'saving…' : 'save configuration')"></button>
-        </div>
-
-        <!-- Memories -->
-        <div class="settings-section">
-          <div class="settings-section-label">memories</div>
-          <div class="settings-card">
-            <template x-for="m in memories" :key="m.key">
-              <div class="memory-item">
-                <div class="memory-key" x-text="m.key"></div>
-                <div class="memory-content" x-text="m.content"></div>
-                <div class="memory-footer">
-                  <span class="memory-time" x-text="m.updated_at"></span>
-                  <button class="del-btn" @click="deleteMemory(m.key)">delete</button>
-                </div>
-              </div>
-            </template>
-            <template x-if="memories.length === 0">
-              <div class="empty-list">no memories saved</div>
-            </template>
-          </div>
-        </div>
-
-      </div>
-    </div>
-  </template>
-
+  </div>
 </div>
 
 <script src="/static/app.js"></script>
