@@ -171,16 +171,23 @@ function connect() {
   });
 
   state.sse.addEventListener('stream_done', () => {
+    const feed = document.getElementById('feed');
+    removeStreamingBubble();
+    const dotsRow = document.getElementById('thinking-dots-row');
+    if (dotsRow) dotsRow.remove();
     if (state.streamingText) {
-      state.messages.push({
+      const msg = {
         type: 'message',
         text: state.streamingText,
         ts: new Date().toTimeString().slice(0, 8),
-      });
+      };
+      state.messages.push(msg);
+      if (feed) feed.appendChild(buildBubbleRow(msg));
     }
     state.streamingText = '';
     state.isStreaming   = false;
-    renderFeed();
+    syncAgentState();
+    scrollFeed();
   });
 }
 
@@ -196,7 +203,68 @@ function onMsg(m) {
     const parsed = parseToolCall(m.text);
     if (parsed.name) state.lastToolName = parsed.name;
   }
-  renderFeed();
+  appendToFeed(m);
+}
+
+function appendToFeed(msg) {
+  const feed = document.getElementById('feed');
+  if (!feed) return;
+
+  // Remove empty state placeholder if present
+  const empty = feed.querySelector('.empty-state');
+  if (empty) empty.remove();
+
+  // Ensure spacer exists
+  if (!feed.querySelector('.feed-spacer')) {
+    const spacer = document.createElement('div');
+    spacer.className = 'feed-spacer';
+    feed.insertBefore(spacer, feed.firstChild);
+  }
+
+  // Remove streaming bubble and thinking dots before appending real content
+  removeStreamingBubble();
+  const dotsRow = document.getElementById('thinking-dots-row');
+  if (dotsRow) dotsRow.remove();
+
+  if (isToolCall(msg)) {
+    const idx     = state.messages.length - 1; // msg already pushed
+    const prevMsg = state.messages[idx - 1];
+
+    if (prevMsg && isToolCall(prevMsg)) {
+      // Consecutive tool call — extend the existing last tool group in the DOM
+      const lastGroupRow = findLastToolGroupRow(feed);
+      if (lastGroupRow) {
+        const gid    = lastGroupRow.querySelector('.tool-group').dataset.gid;
+        const groups = groupMessages(state.messages);
+        const group  = groups.find(g => g.gid === gid);
+        if (group) {
+          lastGroupRow.replaceWith(buildToolGroupRow(group.tools, gid, true));
+        }
+      }
+    } else {
+      // New tool group — de-activate running dot on the previous last group
+      const prevLastRow = findLastToolGroupRow(feed);
+      if (prevLastRow) {
+        const dot = prevLastRow.querySelector('.tool-status-dot');
+        if (dot) dot.classList.remove('running');
+      }
+      const gid = 'tg' + idx;
+      feed.appendChild(buildToolGroupRow([msg], gid, true));
+    }
+  } else {
+    feed.appendChild(buildBubbleRow(msg));
+  }
+
+  syncAgentState();
+  scrollFeed();
+}
+
+function findLastToolGroupRow(feed) {
+  const rows = feed.querySelectorAll('.bubble-row');
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].querySelector('.tool-group')) return rows[i];
+  }
+  return null;
 }
 
 function isToolCall(m) {
