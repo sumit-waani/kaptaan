@@ -78,6 +78,24 @@ func (d *DB) DeleteMemory(ctx context.Context, projectID int, key string) error 
         return err
 }
 
+// GetProjectScratchpad returns the stored scratchpad for a project.
+func (d *DB) GetProjectScratchpad(ctx context.Context, projectID int) (string, error) {
+        var s string
+        err := d.db.QueryRowContext(ctx, "SELECT scratchpad FROM projects WHERE id=?", projectID).Scan(&s)
+        if errors.Is(err, sql.ErrNoRows) {
+                return "", ErrNotFound
+        }
+        return s, err
+}
+
+// SetProjectScratchpad saves scratchpad content for a project.
+func (d *DB) SetProjectScratchpad(ctx context.Context, projectID int, content string) error {
+        _, err := d.db.ExecContext(ctx,
+                "UPDATE projects SET scratchpad=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                content, projectID)
+        return err
+}
+
 // parseDateTime handles SQLite datetime strings in multiple formats.
 func parseDateTime(s string) (time.Time, error) {
         formats := []string{

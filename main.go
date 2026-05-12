@@ -27,10 +27,10 @@ func main() {
 
         pool := llm.New(llm.Config{
                 KeyFn: func() string {
-                        return database.GetConfig(context.Background(), 1, "deepseek_api_key")
+                        return database.GetConfig(context.Background(), 0, "deepseek_api_key")
                 },
                 ModelFn: func() string {
-                        m := database.GetConfig(context.Background(), 1, "deepseek_model")
+                        m := database.GetConfig(context.Background(), 0, "deepseek_model")
                         if m == "" {
                                 return "deepseek-v4-pro"
                         }

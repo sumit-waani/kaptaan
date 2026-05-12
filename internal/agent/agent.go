@@ -423,9 +423,9 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 delete(a.sandboxes, projectID)
         }
 
-        e2bKey := a.db.GetConfig(ctx, projectID, "e2b_api_key")
+        e2bKey := a.db.GetConfig(ctx, 0, "e2b_api_key")
         if e2bKey == "" {
-                return nil, errors.New("e2b_api_key is not configured — set it in Settings → Configuration")
+                return nil, errors.New("e2b_api_key is not configured — set it in Setup → Sandbox")
         }
 
         // Try to reconnect to a previously saved (paused) sandbox.
@@ -547,7 +547,7 @@ func (a *Agent) ReadScratchpad(ctx context.Context, projectID int) (string, erro
         }
 
         // No in-memory sandbox — try to reconnect to a paused one from DB.
-        e2bKey := a.db.GetConfig(ctx, projectID, "e2b_api_key")
+        e2bKey := a.db.GetConfig(ctx, 0, "e2b_api_key")
         if e2bKey == "" {
                 return "", fmt.Errorf("no active sandbox")
         }
@@ -597,23 +597,23 @@ func (a *Agent) pauseSandbox(ctx context.Context, projectID int) {
 }
 
 // systemPrompt is built from the DB. There is no hardcoded fallback.
-// Seed the system_prompt config via Settings → Configuration.
+// system_prompt is stored in global config (project_id=0).
 func (t *turn) systemPrompt() string {
-	ctx := context.Background()
-	mems, _ := t.a.db.ListMemories(ctx, t.projectID)
+        ctx := context.Background()
+        mems, _ := t.a.db.ListMemories(ctx, t.projectID)
 
-	if custom := t.a.db.GetConfig(ctx, t.projectID, "system_prompt"); custom != "" {
-		var b strings.Builder
-		b.WriteString(custom)
-		if len(mems) > 0 {
-			b.WriteString("\n\n## Stored memories\n")
-			for _, m := range mems {
-				fmt.Fprintf(&b, "- `%s` — %s\n", m.Key, truncate(m.Content, 120))
-			}
-		}
-		return b.String()
-	}
-	return "You are Kaptaan. No system_prompt configured — owner must set it in Settings → Configuration.\n"
+        if custom := t.a.db.GetConfig(ctx, 0, "system_prompt"); custom != "" {
+                var b strings.Builder
+                b.WriteString(custom)
+                if len(mems) > 0 {
+                        b.WriteString("\n\n## Stored memories\n")
+                        for _, m := range mems {
+                                fmt.Fprintf(&b, "- `%s` — %s\n", m.Key, truncate(m.Content, 120))
+                        }
+                }
+                return b.String()
+        }
+        return "You are Kaptaan. No system_prompt configured — owner must set it in Settings → Configuration.\n"
 }
 // dispatch executes one tool call and returns the textual result.
 func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
@@ -651,6 +651,11 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                         return "ERROR: " + err.Error()
                 }
                 r := rt.WriteFile(ctx, "/home/user/workspace/scratchpad.md", []byte(content))
+                if !r.IsErr {
+                        if dbErr := t.a.db.SetProjectScratchpad(ctx, t.projectID, content); dbErr != nil {
+                                log.Printf("[agent] SetProjectScratchpad: %v", dbErr)
+                        }
+                }
                 return r.Output
 
         case "read_scratchpad":
@@ -780,138 +785,138 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 return r.Output
 
         case "reset_sandbox":
-			t.a.pauseSandbox(ctx, t.projectID)
-			return "sandbox paused"
-	// ── SSH tools ──
-	case "ssh_exec":
-		host := getStr(args, "host")
-		cmd := getStr(args, "cmd")
-		timeout := getInt(args, "timeout_secs", 30)
-		if host == "" || cmd == "" {
-			return "ERROR: ssh_exec requires `host` and `cmd`"
-		}
-		return t.sshExec(ctx, host, cmd, timeout)
+                        t.a.pauseSandbox(ctx, t.projectID)
+                        return "sandbox paused"
+        // ── SSH tools ──
+        case "ssh_exec":
+                host := getStr(args, "host")
+                cmd := getStr(args, "cmd")
+                timeout := getInt(args, "timeout_secs", 30)
+                if host == "" || cmd == "" {
+                        return "ERROR: ssh_exec requires `host` and `cmd`"
+                }
+                return t.sshExec(ctx, host, cmd, timeout)
 
-	case "ssh_upload":
-		host := getStr(args, "host")
-		content := getStr(args, "local_content")
-		remote := getStr(args, "remote_path")
-		if host == "" || content == "" || remote == "" {
-			return "ERROR: ssh_upload requires `host`, `local_content`, and `remote_path`"
-		}
-		return t.sshUpload(ctx, host, content, remote)
+        case "ssh_upload":
+                host := getStr(args, "host")
+                content := getStr(args, "local_content")
+                remote := getStr(args, "remote_path")
+                if host == "" || content == "" || remote == "" {
+                        return "ERROR: ssh_upload requires `host`, `local_content`, and `remote_path`"
+                }
+                return t.sshUpload(ctx, host, content, remote)
 
-	case "ssh_read":
-		host := getStr(args, "host")
-		remote := getStr(args, "remote_path")
-		if host == "" || remote == "" {
-			return "ERROR: ssh_read requires `host` and `remote_path`"
-		}
-		return t.sshRead(ctx, host, remote)
+        case "ssh_read":
+                host := getStr(args, "host")
+                remote := getStr(args, "remote_path")
+                if host == "" || remote == "" {
+                        return "ERROR: ssh_read requires `host` and `remote_path`"
+                }
+                return t.sshRead(ctx, host, remote)
 
-	// ── GitHub tools ──
-	case "gh_list_issues":
-		state := getStr(args, "state")
-		return t.ghListIssues(ctx, state)
+        // ── GitHub tools ──
+        case "gh_list_issues":
+                state := getStr(args, "state")
+                return t.ghListIssues(ctx, state)
 
-	case "gh_create_issue":
-		title := getStr(args, "title")
-		body := getStr(args, "body")
-		if title == "" {
-			return "ERROR: gh_create_issue requires `title`"
-		}
-		return t.ghCreateIssue(ctx, title, body)
+        case "gh_create_issue":
+                title := getStr(args, "title")
+                body := getStr(args, "body")
+                if title == "" {
+                        return "ERROR: gh_create_issue requires `title`"
+                }
+                return t.ghCreateIssue(ctx, title, body)
 
-	case "gh_close_issue":
-		num := getInt(args, "number", 0)
-		if num <= 0 {
-			return "ERROR: gh_close_issue requires `number`"
-		}
-		return t.ghCloseIssue(ctx, num)
+        case "gh_close_issue":
+                num := getInt(args, "number", 0)
+                if num <= 0 {
+                        return "ERROR: gh_close_issue requires `number`"
+                }
+                return t.ghCloseIssue(ctx, num)
 
-	case "gh_list_workflows":
-		return t.ghListWorkflows(ctx)
+        case "gh_list_workflows":
+                return t.ghListWorkflows(ctx)
 
-	case "gh_trigger_workflow":
-		wfID := getStr(args, "workflow_id")
-		ref := getStr(args, "ref")
-		if wfID == "" {
-			return "ERROR: gh_trigger_workflow requires `workflow_id`"
-		}
-		return t.ghTriggerWorkflow(ctx, wfID, ref)
+        case "gh_trigger_workflow":
+                wfID := getStr(args, "workflow_id")
+                ref := getStr(args, "ref")
+                if wfID == "" {
+                        return "ERROR: gh_trigger_workflow requires `workflow_id`"
+                }
+                return t.ghTriggerWorkflow(ctx, wfID, ref)
 
-	case "gh_get_workflow_run":
-		runID := getInt(args, "run_id", 0)
-		if runID <= 0 {
-			return "ERROR: gh_get_workflow_run requires `run_id`"
-		}
-		return t.ghGetWorkflowRun(ctx, runID)
+        case "gh_get_workflow_run":
+                runID := getInt(args, "run_id", 0)
+                if runID <= 0 {
+                        return "ERROR: gh_get_workflow_run requires `run_id`"
+                }
+                return t.ghGetWorkflowRun(ctx, runID)
 
-	case "gh_list_branches":
-		return t.ghListBranches(ctx)
+        case "gh_list_branches":
+                return t.ghListBranches(ctx)
 
-	case "gh_delete_branch":
-		branch := getStr(args, "branch")
-		if branch == "" {
-			return "ERROR: gh_delete_branch requires `branch`"
-		}
-		return t.ghDeleteBranch(ctx, branch)
+        case "gh_delete_branch":
+                branch := getStr(args, "branch")
+                if branch == "" {
+                        return "ERROR: gh_delete_branch requires `branch`"
+                }
+                return t.ghDeleteBranch(ctx, branch)
 
-	case "gh_get_file":
-		path := getStr(args, "path")
-		ref := getStr(args, "ref")
-		if path == "" {
-			return "ERROR: gh_get_file requires `path`"
-		}
-		return t.ghGetFile(ctx, path, ref)
+        case "gh_get_file":
+                path := getStr(args, "path")
+                ref := getStr(args, "ref")
+                if path == "" {
+                        return "ERROR: gh_get_file requires `path`"
+                }
+                return t.ghGetFile(ctx, path, ref)
 
-	// ── Cloudflare tools ──
-	case "cf_list_dns_records":
-		recType := getStr(args, "type")
-		return t.cfListDNS(ctx, recType)
+        // ── Cloudflare tools ──
+        case "cf_list_dns_records":
+                recType := getStr(args, "type")
+                return t.cfListDNS(ctx, recType)
 
-	case "cf_create_dns":
-		recType := getStr(args, "type")
-		name := getStr(args, "name")
-		content := getStr(args, "content")
-		ttl := getInt(args, "ttl", 1)
-		proxied := getBool(args, "proxied", false)
-		if recType == "" || name == "" || content == "" {
-			return "ERROR: cf_create_dns requires `type`, `name`, and `content`"
-		}
-		return t.cfCreateDNS(ctx, recType, name, content, ttl, proxied)
+        case "cf_create_dns":
+                recType := getStr(args, "type")
+                name := getStr(args, "name")
+                content := getStr(args, "content")
+                ttl := getInt(args, "ttl", 1)
+                proxied := getBool(args, "proxied", false)
+                if recType == "" || name == "" || content == "" {
+                        return "ERROR: cf_create_dns requires `type`, `name`, and `content`"
+                }
+                return t.cfCreateDNS(ctx, recType, name, content, ttl, proxied)
 
-	case "cf_update_dns":
-		recID := getStr(args, "record_id")
-		recType := getStr(args, "type")
-		name := getStr(args, "name")
-		content := getStr(args, "content")
-		proxied := getBool(args, "proxied", false)
-		if recID == "" || recType == "" || name == "" || content == "" {
-			return "ERROR: cf_update_dns requires `record_id`, `type`, `name`, and `content`"
-		}
-		return t.cfUpdateDNS(ctx, recID, recType, name, content, proxied)
+        case "cf_update_dns":
+                recID := getStr(args, "record_id")
+                recType := getStr(args, "type")
+                name := getStr(args, "name")
+                content := getStr(args, "content")
+                proxied := getBool(args, "proxied", false)
+                if recID == "" || recType == "" || name == "" || content == "" {
+                        return "ERROR: cf_update_dns requires `record_id`, `type`, `name`, and `content`"
+                }
+                return t.cfUpdateDNS(ctx, recID, recType, name, content, proxied)
 
-	case "cf_delete_dns":
-		recID := getStr(args, "record_id")
-		if recID == "" {
-			return "ERROR: cf_delete_dns requires `record_id`"
-		}
-		return t.cfDeleteDNS(ctx, recID)
+        case "cf_delete_dns":
+                recID := getStr(args, "record_id")
+                if recID == "" {
+                        return "ERROR: cf_delete_dns requires `record_id`"
+                }
+                return t.cfDeleteDNS(ctx, recID)
 
-	case "cf_purge_cache":
-		files := getStr(args, "files")
-		if files == "" {
-			return "ERROR: cf_purge_cache requires `files`"
-		}
-		return t.cfPurgeCache(ctx, files)
+        case "cf_purge_cache":
+                files := getStr(args, "files")
+                if files == "" {
+                        return "ERROR: cf_purge_cache requires `files`"
+                }
+                return t.cfPurgeCache(ctx, files)
 
-	case "cf_get_analytics":
-		sinceHours := getInt(args, "since_hours", 24)
-		return t.cfGetAnalytics(ctx, sinceHours)
+        case "cf_get_analytics":
+                sinceHours := getInt(args, "since_hours", 24)
+                return t.cfGetAnalytics(ctx, sinceHours)
 
-	default:
-		return fmt.Sprintf("ERROR: unknown tool %q", name)
+        default:
+                return fmt.Sprintf("ERROR: unknown tool %q", name)
         }
 }
 
@@ -933,11 +938,11 @@ func getInt(args map[string]interface{}, key string, def int) int {
 }
 
 func getBool(args map[string]interface{}, key string, def bool) bool {
-	switch v := args[key].(type) {
-	case bool:
-		return v
-	}
-	return def
+        switch v := args[key].(type) {
+        case bool:
+                return v
+        }
+        return def
 }
 
 func summariseArgs(args map[string]interface{}) string {

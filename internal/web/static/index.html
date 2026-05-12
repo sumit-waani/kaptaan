@@ -31,40 +31,43 @@
   </div>
 </div>
 
-<!-- ── Main app ───────────────────────────────────────────────────────────── -->
+<!-- ── App / Chat ─────────────────────────────────────────────────────────── -->
 <div id="view-app" class="app" style="display:none">
 
   <header class="header">
     <div class="header-icon">
-      <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+      <svg width="20" height="20" viewBox="0 0 28 28" fill="none">
         <circle cx="14" cy="8" r="3" stroke="#f2f2f7" stroke-width="1.5"/>
         <line x1="14" y1="11" x2="14" y2="22" stroke="#f2f2f7" stroke-width="1.5" stroke-linecap="round"/>
         <line x1="7" y1="16" x2="21" y2="16" stroke="#f2f2f7" stroke-width="1.5" stroke-linecap="round"/>
         <path d="M7 22 Q14 26 21 22" stroke="#f2f2f7" stroke-width="1.5" fill="none" stroke-linecap="round"/>
       </svg>
     </div>
-    <div class="header-title">kaptaan</div>
+    <select id="project-select" class="header-project-select"></select>
     <div class="status-pill">
       <div id="status-dot" class="status-dot idle"></div>
       <span id="status-text">idle</span>
     </div>
     <button id="stop-btn" class="stop-btn" style="display:none" title="stop task">
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+      <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor">
         <rect x="1" y="1" width="10" height="10" rx="2"/>
       </svg>
     </button>
-    <button id="settings-btn" class="icon-btn">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8e8e93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <button id="settings-btn" class="icon-btn" title="project settings">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#8e8e93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3"/>
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
       </svg>
     </button>
+    <button id="setup-btn" class="icon-btn" title="global setup">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#8e8e93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="7" height="7" rx="1"/>
+        <rect x="14" y="3" width="7" height="7" rx="1"/>
+        <rect x="3" y="14" width="7" height="7" rx="1"/>
+        <rect x="14" y="14" width="7" height="7" rx="1"/>
+      </svg>
+    </button>
   </header>
-
-  <div class="project-bar">
-    <select id="project-select" class="project-select"></select>
-    <button id="project-new-btn" class="project-new-btn" title="new project">+</button>
-  </div>
 
   <div id="feed" class="feed"></div>
 
@@ -93,24 +96,99 @@
 
 </div>
 
-<!-- ── Settings ───────────────────────────────────────────────────────────── -->
-<div id="view-settings" class="settings-overlay" style="display:none">
-  <div class="settings-header">
+<!-- ── Setup (global config + projects) ──────────────────────────────────── -->
+<div id="view-setup" class="overlay-page" style="display:none">
+  <div class="overlay-header">
+    <button id="setup-back-btn" class="back-btn">
+      <svg width="8" height="13" viewBox="0 0 8 14" fill="none">
+        <path d="M7 1L1 7L7 13" stroke="#aeaeb2" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      back
+    </button>
+    <span class="overlay-title">setup</span>
+    <button id="logout-btn" class="back-btn" style="color:#ff453a">sign out</button>
+  </div>
+
+  <div class="overlay-body">
+
+    <div class="settings-section">
+      <div class="settings-section-label">llm</div>
+      <div class="settings-card">
+        <div class="cfg-row">
+          <div class="cfg-label">deepseek api key</div>
+          <div class="cfg-input-wrap">
+            <input id="setup-deepseek-key" class="cfg-input" type="password" placeholder="sk-..." autocomplete="off" />
+            <button class="cfg-show-btn" data-target="setup-deepseek-key">show</button>
+          </div>
+        </div>
+        <div class="cfg-row" style="border-bottom:none">
+          <div class="cfg-label">model</div>
+          <div class="cfg-input-wrap">
+            <input id="setup-deepseek-model" class="cfg-input" type="text" placeholder="deepseek-v4-pro" autocomplete="off" />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-label">sandbox</div>
+      <div class="settings-card">
+        <div class="cfg-row" style="border-bottom:none">
+          <div class="cfg-label">e2b api key</div>
+          <div class="cfg-input-wrap">
+            <input id="setup-e2b-key" class="cfg-input" type="password" placeholder="e2b_..." autocomplete="off" />
+            <button class="cfg-show-btn" data-target="setup-e2b-key">show</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-label">
+        system prompt
+        <span style="font-size:10px;color:var(--dim);text-transform:none;letter-spacing:0">&nbsp;(global — no fallback)</span>
+      </div>
+      <textarea id="setup-system-prompt" class="cfg-textarea" rows="7"
+        placeholder="The system prompt for Kaptaan. No hardcoded fallback — must be set here."></textarea>
+    </div>
+
+    <div class="settings-section">
+      <p id="setup-save-err" class="err-msg" style="display:none"></p>
+      <button id="setup-save-btn" class="action-btn primary">save global config</button>
+    </div>
+
+    <div class="settings-section" style="margin-top:36px">
+      <div class="settings-section-label">projects</div>
+      <div id="projects-list" class="settings-card">
+        <div class="empty-list">loading…</div>
+      </div>
+      <div class="proj-create-row">
+        <input id="new-project-name" class="proj-create-input" type="text" placeholder="new project name…" autocomplete="off" />
+        <button id="new-project-btn" class="proj-create-btn">create</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Settings (project-specific) ───────────────────────────────────────── -->
+<div id="view-settings" class="overlay-page" style="display:none">
+  <div class="overlay-header">
     <button id="settings-back-btn" class="back-btn">
       <svg width="8" height="13" viewBox="0 0 8 14" fill="none">
         <path d="M7 1L1 7L7 13" stroke="#aeaeb2" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
       back
     </button>
-    <span class="settings-title">settings</span>
-    <button id="logout-btn" class="back-btn" style="color:#ff453a">sign out</button>
+    <span class="overlay-title" id="settings-title">settings</span>
+    <div style="width:52px"></div>
   </div>
 
-  <div class="settings-body">
+  <div class="overlay-body">
 
     <div class="settings-section">
       <div class="settings-section-label">conversation</div>
-      <button id="clear-convo-btn" class="action-btn">clear conversation</button>
+      <button id="clear-convo-btn" class="action-btn danger">clear conversation</button>
     </div>
 
     <div class="settings-section">
@@ -123,7 +201,7 @@
 
     <div class="settings-section">
       <div class="settings-section-label">scratchpad</div>
-      <div id="scratchpad-display" class="empty-list" style="margin-bottom:8px">press refresh to load</div>
+      <div id="scratchpad-display" class="empty-list" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px;padding:16px">press refresh to load</div>
       <button id="refresh-scratchpad-btn" class="action-btn">refresh</button>
     </div>
 
@@ -131,57 +209,27 @@
       <div class="settings-section-label">configuration</div>
       <div class="settings-card">
         <div class="cfg-row">
-          <div class="cfg-label">deepseek api key</div>
-          <div class="cfg-input-wrap">
-            <input id="cfg-deepseek-key" class="cfg-input" type="password" placeholder="sk-..." autocomplete="off" />
-            <button class="cfg-show-btn" data-target="cfg-deepseek-key">show</button>
-          </div>
-        </div>
-        <div class="cfg-row">
-          <div class="cfg-label">deepseek model</div>
-          <div class="cfg-input-wrap">
-            <input id="cfg-deepseek-model" class="cfg-input" type="text" placeholder="deepseek-v4-pro" autocomplete="off" />
-          </div>
-        </div>
-        <div class="cfg-row">
-          <div class="cfg-label">e2b api key</div>
-          <div class="cfg-input-wrap">
-            <input id="cfg-e2b-key" class="cfg-input" type="password" placeholder="e2b_..." autocomplete="off" />
-            <button class="cfg-show-btn" data-target="cfg-e2b-key">show</button>
-          </div>
-        </div>
-        <div class="cfg-row">
           <div class="cfg-label">repository url</div>
           <div class="cfg-input-wrap">
             <input id="cfg-repo-url" class="cfg-input" type="url" placeholder="https://github.com/owner/repo" autocomplete="off" />
           </div>
         </div>
-        <div class="cfg-row" style="border-bottom:none">
+        <div class="cfg-row">
           <div class="cfg-label">github token</div>
           <div class="cfg-input-wrap">
             <input id="cfg-github-token" class="cfg-input" type="password" placeholder="ghp_..." autocomplete="off" />
             <button class="cfg-show-btn" data-target="cfg-github-token">show</button>
           </div>
         </div>
-      </div>
-      <div class="settings-section-label" style="margin-top:16px">
-        system prompt
-        <span style="font-size:10px;color:var(--dim);text-transform:none;letter-spacing:0">&nbsp;(required — no fallback)</span>
-      </div>
-      <textarea id="cfg-system-prompt" class="cfg-textarea"
-        placeholder="The Kaptaan system prompt. Must be set — there is no hardcoded fallback. Customise it here." rows="5"></textarea>
-      <p id="cfg-error" class="err-msg" style="display:none"></p>
-      <div class="settings-section-label" style="margin-top:16px">cloudflare</div>
-      <div class="settings-card">
         <div class="cfg-row">
-          <div class="cfg-label">cf api token</div>
+          <div class="cfg-label">cloudflare api token</div>
           <div class="cfg-input-wrap">
             <input id="cfg-cf-token" class="cfg-input" type="password" placeholder="Bearer token" autocomplete="off" />
             <button class="cfg-show-btn" data-target="cfg-cf-token">show</button>
           </div>
         </div>
         <div class="cfg-row" style="border-bottom:none">
-          <div class="cfg-label">cf zone id</div>
+          <div class="cfg-label">cloudflare zone id</div>
           <div class="cfg-input-wrap">
             <input id="cfg-cf-zone" class="cfg-input" type="text" placeholder="zone identifier" autocomplete="off" />
           </div>
@@ -189,7 +237,8 @@
       </div>
       <div class="settings-section-label" style="margin-top:16px">ssh hosts</div>
       <textarea id="cfg-ssh-hosts" class="cfg-textarea"
-        placeholder='JSON map of logical names to host configs: {"prod": {"host": "1.2.3.4", "user": "ubuntu", "key": "-----BEGIN RSA PRIVATE KEY-----..."}}' rows="5" style="font-family:monospace;font-size:11px"></textarea>
+        placeholder='{"prod": {"host": "1.2.3.4", "user": "ubuntu", "key": "-----BEGIN RSA PRIVATE KEY-----..."}}' rows="4" style="font-family:monospace;font-size:11px"></textarea>
+      <p id="cfg-error" class="err-msg" style="display:none"></p>
       <button id="cfg-save-btn" class="action-btn primary">save configuration</button>
     </div>
 
