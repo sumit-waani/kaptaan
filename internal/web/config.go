@@ -14,6 +14,9 @@ var knownConfigKeys = []string{
 	"repo_url",
 	"github_token",
 	"system_prompt",
+	"cf_api_token",
+	"cf_zone_id",
+	"ssh_hosts",
 }
 
 // GET  /api/config  → {config: {key: value, ...}}

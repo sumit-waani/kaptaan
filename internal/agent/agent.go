@@ -625,6 +625,15 @@ func (t *turn) systemPrompt() string {
         b.WriteString("- Commit frequently with `git_commit` after each meaningful chunk of work.\n")
         b.WriteString("- To publish work: use `shell` to run `git push -u origin kaptaan`.\n\n")
 
+	b.WriteString("## SSH, GitHub, and Cloudflare tools\n")
+	b.WriteString("- `ssh_exec(host, cmd)` — run commands on configured hosts (keys in Settings)\n")
+	b.WriteString("- `ssh_upload(host, content, path)` / `ssh_read(host, path)` — file transfer\n")
+	b.WriteString("- `gh_list_issues(state)` / `gh_create_issue(title, body)` / `gh_close_issue(number)`\n")
+	b.WriteString("- `gh_list_workflows` / `gh_trigger_workflow(id, ref)` / `gh_get_workflow_run(run_id)`\n")
+	b.WriteString("- `gh_list_branches` / `gh_delete_branch(branch)` / `gh_get_file(path, ref)`\n")
+	b.WriteString("- `cf_list_dns_records(type)` / `cf_create_dns(...)` / `cf_update_dns(...)` / `cf_delete_dns(id)`\n")
+	b.WriteString("- `cf_purge_cache(files)` / `cf_get_analytics(since_hours)`\n")
+	b.WriteString("- All credentials stay server-side — the LLM only sees logical names like host=\"prod\".\n\n")
         if len(mems) > 0 {
                 b.WriteString("## Stored memories\n")
                 for _, m := range mems {
@@ -800,11 +809,138 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 return r.Output
 
         case "reset_sandbox":
-                t.a.resetSandbox(ctx, t.projectID)
-                return "sandbox reset"
+		return "sandbox reset"
 
-        default:
-                return fmt.Sprintf("ERROR: unknown tool %q", name)
+	// ── SSH tools ──
+	case "ssh_exec":
+		host := getStr(args, "host")
+		cmd := getStr(args, "cmd")
+		timeout := getInt(args, "timeout_secs", 30)
+		if host == "" || cmd == "" {
+			return "ERROR: ssh_exec requires `host` and `cmd`"
+		}
+		return t.sshExec(ctx, host, cmd, timeout)
+
+	case "ssh_upload":
+		host := getStr(args, "host")
+		content := getStr(args, "local_content")
+		remote := getStr(args, "remote_path")
+		if host == "" || remote == "" {
+			return "ERROR: ssh_upload requires `host`, `local_content`, and `remote_path`"
+		}
+		return t.sshUpload(ctx, host, content, remote)
+
+	case "ssh_read":
+		host := getStr(args, "host")
+		remote := getStr(args, "remote_path")
+		if host == "" || remote == "" {
+			return "ERROR: ssh_read requires `host` and `remote_path`"
+		}
+		return t.sshRead(ctx, host, remote)
+
+	// ── GitHub tools ──
+	case "gh_list_issues":
+		state := getStr(args, "state")
+		return t.ghListIssues(ctx, state)
+
+	case "gh_create_issue":
+		title := getStr(args, "title")
+		body := getStr(args, "body")
+		if title == "" || body == "" {
+			return "ERROR: gh_create_issue requires `title` and `body`"
+		}
+		return t.ghCreateIssue(ctx, title, body)
+
+	case "gh_close_issue":
+		num := getInt(args, "number", 0)
+		if num <= 0 {
+			return "ERROR: gh_close_issue requires `number`"
+		}
+		return t.ghCloseIssue(ctx, num)
+
+	case "gh_list_workflows":
+		return t.ghListWorkflows(ctx)
+
+	case "gh_trigger_workflow":
+		wfID := getStr(args, "workflow_id")
+		ref := getStr(args, "ref")
+		if wfID == "" {
+			return "ERROR: gh_trigger_workflow requires `workflow_id`"
+		}
+		return t.ghTriggerWorkflow(ctx, wfID, ref)
+
+	case "gh_get_workflow_run":
+		runID := getInt(args, "run_id", 0)
+		if runID <= 0 {
+			return "ERROR: gh_get_workflow_run requires `run_id`"
+		}
+		return t.ghGetWorkflowRun(ctx, runID)
+
+	case "gh_list_branches":
+		return t.ghListBranches(ctx)
+
+	case "gh_delete_branch":
+		branch := getStr(args, "branch")
+		if branch == "" {
+			return "ERROR: gh_delete_branch requires `branch`"
+		}
+		return t.ghDeleteBranch(ctx, branch)
+
+	case "gh_get_file":
+		path := getStr(args, "path")
+		ref := getStr(args, "ref")
+		if path == "" {
+			return "ERROR: gh_get_file requires `path`"
+		}
+		return t.ghGetFile(ctx, path, ref)
+
+	// ── Cloudflare tools ──
+	case "cf_list_dns_records":
+		recType := getStr(args, "type")
+		return t.cfListDNS(ctx, recType)
+
+	case "cf_create_dns":
+		recType := getStr(args, "type")
+		name := getStr(args, "name")
+		content := getStr(args, "content")
+		ttl := getInt(args, "ttl", 1)
+		proxied := getBool(args, "proxied", false)
+		if recType == "" || name == "" || content == "" {
+			return "ERROR: cf_create_dns requires `type`, `name`, and `content`"
+		}
+		return t.cfCreateDNS(ctx, recType, name, content, ttl, proxied)
+
+	case "cf_update_dns":
+		recID := getStr(args, "record_id")
+		recType := getStr(args, "type")
+		name := getStr(args, "name")
+		content := getStr(args, "content")
+		proxied := getBool(args, "proxied", false)
+		if recID == "" || recType == "" || name == "" || content == "" {
+			return "ERROR: cf_update_dns requires `record_id`, `type`, `name`, and `content`"
+		}
+		return t.cfUpdateDNS(ctx, recID, recType, name, content, proxied)
+
+	case "cf_delete_dns":
+		recID := getStr(args, "record_id")
+		if recID == "" {
+			return "ERROR: cf_delete_dns requires `record_id`"
+		}
+		return t.cfDeleteDNS(ctx, recID)
+
+	case "cf_purge_cache":
+		files := getStr(args, "files")
+		if files == "" {
+			return "ERROR: cf_purge_cache requires `files`"
+		}
+		return t.cfPurgeCache(ctx, files)
+
+	case "cf_get_analytics":
+		sinceHours := getInt(args, "since_hours", 24)
+		return t.cfGetAnalytics(ctx, sinceHours)
+
+	default:
+		return fmt.Sprintf("ERROR: unknown tool %q", name)
         }
 }
 
@@ -826,6 +962,13 @@ func getInt(args map[string]interface{}, key string, def int) int {
 }
 
 func summariseArgs(args map[string]interface{}) string {
+func getBool(args map[string]interface{}, key string, def bool) bool {
+	switch v := args[key].(type) {
+	case bool:
+		return v
+	}
+	return def
+}
         if len(args) == 0 {
                 return ""
         }

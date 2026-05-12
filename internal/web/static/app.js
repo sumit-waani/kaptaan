@@ -707,6 +707,9 @@ async function loadConfig() {
   setVal('cfg-repo-url',        'repo_url');
   setVal('cfg-github-token',    'github_token');
   setVal('cfg-system-prompt',   'system_prompt');
+  setVal('cfg-cf-token',     'cf_api_token');
+  setVal('cfg-cf-zone',      'cf_zone_id');
+  setVal('cfg-ssh-hosts',    'ssh_hosts');
 }
 
 async function saveConfig() {
@@ -722,6 +725,9 @@ async function saveConfig() {
     {id: 'cfg-repo-url',       key: 'repo_url'},
     {id: 'cfg-github-token',   key: 'github_token'},
     {id: 'cfg-system-prompt',  key: 'system_prompt'},
+    {id: 'cfg-cf-token',    key: 'cf_api_token'},
+    {id: 'cfg-cf-zone',     key: 'cf_zone_id'},
+    {id: 'cfg-ssh-hosts',   key: 'ssh_hosts'},
   ];
 
   for (const f of fields) {

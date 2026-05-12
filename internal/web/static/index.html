@@ -166,6 +166,25 @@
       <textarea id="cfg-system-prompt" class="cfg-textarea"
         placeholder="Leave empty to use the built-in Kaptaan prompt. Paste a custom system prompt here to fully replace it." rows="5"></textarea>
       <p id="cfg-error" class="err-msg" style="display:none"></p>
+      <div class="settings-section-label" style="margin-top:16px">cloudflare</div>
+      <div class="settings-card">
+        <div class="cfg-row">
+          <div class="cfg-label">cf api token</div>
+          <div class="cfg-input-wrap">
+            <input id="cfg-cf-token" class="cfg-input" type="password" placeholder="Bearer token" autocomplete="off" />
+            <button class="cfg-show-btn" data-target="cfg-cf-token">show</button>
+          </div>
+        </div>
+        <div class="cfg-row" style="border-bottom:none">
+          <div class="cfg-label">cf zone id</div>
+          <div class="cfg-input-wrap">
+            <input id="cfg-cf-zone" class="cfg-input" type="text" placeholder="zone identifier" autocomplete="off" />
+          </div>
+        </div>
+      </div>
+      <div class="settings-section-label" style="margin-top:16px">ssh hosts</div>
+      <textarea id="cfg-ssh-hosts" class="cfg-textarea"
+        placeholder='JSON map of logical names to host configs: {"prod": {"host": "1.2.3.4", "user": "ubuntu", "key": "-----BEGIN RSA PRIVATE KEY-----..."}}' rows="5" style="font-family:monospace;font-size:11px"></textarea>
       <button id="cfg-save-btn" class="action-btn primary">save configuration</button>
     </div>
 
