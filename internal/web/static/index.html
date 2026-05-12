@@ -240,11 +240,29 @@
           </div>
         </div>
       </div>
-      <div class="settings-section-label" style="margin-top:16px">ssh hosts</div>
-      <textarea id="cfg-ssh-hosts" class="cfg-textarea"
-        placeholder='{"prod": {"host": "1.2.3.4", "user": "ubuntu", "key": "-----BEGIN RSA PRIVATE KEY-----..."}}' rows="4" style="font-family:monospace;font-size:11px"></textarea>
       <p id="cfg-error" class="err-msg" style="display:none"></p>
       <button id="cfg-save-btn" class="action-btn primary">save configuration</button>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-label">ssh hosts</div>
+      <div class="settings-card" id="ssh-hosts-list">
+        <div class="empty-list">no hosts configured</div>
+      </div>
+      <div class="ssh-add-form">
+        <div class="ssh-add-row">
+          <input id="ssh-new-name" class="cfg-input" type="text" placeholder="name  (e.g. prod)" autocomplete="off" spellcheck="false" />
+          <input id="ssh-new-host" class="cfg-input" type="text" placeholder="host / IP" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="ssh-add-row">
+          <input id="ssh-new-user" class="cfg-input" type="text" placeholder="username" autocomplete="off" spellcheck="false" />
+          <label class="ssh-key-upload">
+            <input id="ssh-new-key-file" type="file" style="display:none" />
+            <span id="ssh-key-file-name">upload key file</span>
+          </label>
+        </div>
+        <button id="ssh-add-btn" class="action-btn">add host</button>
+      </div>
     </div>
 
     <div class="settings-section">
