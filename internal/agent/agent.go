@@ -825,7 +825,7 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
 		host := getStr(args, "host")
 		content := getStr(args, "local_content")
 		remote := getStr(args, "remote_path")
-		if host == "" || remote == "" {
+		if host == "" || content == "" || remote == "" {
 			return "ERROR: ssh_upload requires `host`, `local_content`, and `remote_path`"
 		}
 		return t.sshUpload(ctx, host, content, remote)
@@ -833,7 +833,7 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
 	case "ssh_read":
 		host := getStr(args, "host")
 		remote := getStr(args, "remote_path")
-		if host == "" || remote == "" {
+		if host == "" || content == "" || remote == "" {
 			return "ERROR: ssh_read requires `host` and `remote_path`"
 		}
 		return t.sshRead(ctx, host, remote)
@@ -961,7 +961,6 @@ func getInt(args map[string]interface{}, key string, def int) int {
         return def
 }
 
-func summariseArgs(args map[string]interface{}) string {
 func getBool(args map[string]interface{}, key string, def bool) bool {
 	switch v := args[key].(type) {
 	case bool:
@@ -969,6 +968,8 @@ func getBool(args map[string]interface{}, key string, def bool) bool {
 	}
 	return def
 }
+
+func summariseArgs(args map[string]interface{}) string {
         if len(args) == 0 {
                 return ""
         }

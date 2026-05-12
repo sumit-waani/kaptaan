@@ -107,8 +107,10 @@ func (t *turn) sshExec(ctx context.Context, host, cmd string, timeoutSecs int) s
 		}
 		return truncate(out, 8000)
 	case <-time.After(timeout):
+		session.Close() // kill remote process on timeout
 		return fmt.Sprintf("ERROR: ssh command timed out after %ds", timeoutSecs)
 	case <-ctx.Done():
+		session.Close()
 		return "ERROR: cancelled"
 	}
 }
@@ -136,15 +138,13 @@ func (t *turn) sshUpload(ctx context.Context, host, localContent, remotePath str
 	}
 	defer session.Close()
 
-	// Pipe content via stdin to a remote shell command that writes the file.
+	// Pipe content via stdin — no size limits, no heredoc delimiter issues.
 	session.Stdin = strings.NewReader(localContent)
 
 	var stderr strings.Builder
 	session.Stderr = &stderr
 
-	// Use cat with a heredoc-like approach — safer than echo for arbitrary content.
-	escaped := strings.ReplaceAll(localContent, "'", "'\\''")
-	cmd := fmt.Sprintf("cat > %s << 'KAPTAAN_EOF'\n%s\nKAPTAAN_EOF", shellQuote(remotePath), escaped)
+	cmd := fmt.Sprintf("cat > %s", shellQuote(remotePath))
 
 	if err := session.Run(cmd); err != nil {
 		if exitErr, ok := err.(*ssh.ExitError); ok {

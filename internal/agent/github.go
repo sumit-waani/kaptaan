@@ -413,9 +413,7 @@ func (t *turn) ghGetFile(ctx context.Context, path, ref string) string {
 	}
 
 	urlPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
-	if ref != "" {
-		urlPath += "?ref=" + ref
-	}
+	urlPath += "?ref=" + ref
 
 	data, status, err := githubReq(ctx, token, "GET", urlPath, nil)
 	if err != nil {

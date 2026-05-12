@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -281,7 +282,7 @@ func (t *turn) cfPurgeCache(ctx context.Context, files string) string {
 	}
 
 	payload := map[string]interface{}{}
-	if files == "" || files == "*" || files == "everything" {
+	if files == "*" || files == "everything" {
 		payload["purge_everything"] = true
 	} else {
 		// Split on comma or whitespace
@@ -303,7 +304,7 @@ func (t *turn) cfPurgeCache(ctx context.Context, files string) string {
 	if !res.Success {
 		return fmt.Sprintf("ERROR: %v", res.Errors)
 	}
-	if files == "" || files == "*" || files == "everything" {
+	if files == "*" || files == "everything" {
 		return "purged entire cache"
 	}
 	return fmt.Sprintf("purged %d URL(s)", len(splitList(files)))
@@ -353,44 +354,6 @@ func (t *turn) cfGetAnalytics(ctx context.Context, sinceHours int) string {
 }
 
 func splitList(s string) []string {
-	parts := []string{}
-	for _, p := range splitAny(s, ",\n") {
-		p = stringsTrimSpace(p)
-		if p != "" {
-			parts = append(parts, p)
-		}
-	}
-	return parts
-}
-
-func stringsTrimSpace(s string) string {
-	start, end := 0, len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
-		end--
-	}
-	return s[start:end]
-}
-
-func splitAny(s, chars string) []string {
-	m := make(map[rune]bool)
-	for _, c := range chars {
-		m[c] = true
-	}
-	var parts []string
-	start := 0
-	for i, c := range s {
-		if m[c] {
-			if i > start {
-				parts = append(parts, s[start:i])
-			}
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		parts = append(parts, s[start:])
-	}
-	return parts
+	f := func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r' }
+	return strings.FieldsFunc(s, f)
 }
