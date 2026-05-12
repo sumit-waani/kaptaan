@@ -19,10 +19,6 @@ import (
         "github.com/cto-agent/cto-agent/internal/tools"
 )
 
-// fixedProjectID is used as the key for memories, conversations, and sandbox
-// state. There is only one project now — config comes from env vars.
-const fixedProjectID = 1
-
 // Hooks are the small set of UI callbacks the agent invokes.
 type Hooks struct {
         Send           func(projectID int, text string)
@@ -427,14 +423,38 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 delete(a.sandboxes, projectID)
         }
 
-        e2bKey := a.db.GetConfig(ctx, "e2b_api_key")
+        e2bKey := a.db.GetConfig(ctx, projectID, "e2b_api_key")
         if e2bKey == "" {
                 return nil, errors.New("e2b_api_key is not configured — set it in Settings → Configuration")
         }
 
         // Try to reconnect to a previously saved (paused) sandbox.
-        if savedID := a.db.GetConfig(ctx, "_sandbox_id"); savedID != "" {
-                a.hooks.Send(projectID, "🔄 reconnecting to saved sandbox…")
+        if savedID := a.db.GetConfig(ctx, projectID, "_sandbox_id"); savedID != "" {
+                // Ping first — if sandbox is still running, reuse it without
+                // calling /resume (which may fail on an already-live sandbox).
+                handle := sandbox.NewHandle(e2bKey, savedID)
+                if handle.ID != "" && handle.Ping(ctx) {
+                        runtime := &tools.SandboxRuntime{
+                                Sandbox: handle,
+                                Cwd:     "/home/user/workspace",
+                                Env: map[string]string{
+                                        "HOME": "/home/user",
+                                        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                                },
+                        }
+                        // Sync with latest from origin/main on every reconnect.
+                        if a.db.GetConfig(ctx, projectID, "github_token") != "" {
+                                if r := runtime.Shell(ctx, "cd /home/user/workspace && git fetch origin && git merge origin/main --no-edit", 60); r.IsErr {
+                                        log.Printf("[agent] git sync failed: %s", r.Output)
+                                }
+                        }
+                        a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
+                        a.hooks.Send(projectID, "✅ sandbox reconnected, branch: `kaptaan`")
+                        return runtime, nil
+                }
+
+                // Sandbox is paused or unreachable — resume it.
+                a.hooks.Send(projectID, "🔄 resuming paused sandbox…")
                 sb, err := sandbox.Connect(ctx, e2bKey, savedID)
                 if err == nil {
                         runtime := &tools.SandboxRuntime{
@@ -446,18 +466,18 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                                 },
                         }
                         // Sync with latest from origin/main on every reconnect.
-                        if a.db.GetConfig(ctx, "github_token") != "" {
+                        if a.db.GetConfig(ctx, projectID, "github_token") != "" {
                                 if r := runtime.Shell(ctx, "cd /home/user/workspace && git fetch origin && git merge origin/main --no-edit", 60); r.IsErr {
                                         log.Printf("[agent] git sync failed: %s", r.Output)
                                 }
                         }
                         a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
-                        a.hooks.Send(projectID, "✅ sandbox reconnected, branch: `kaptaan`")
+                        a.hooks.Send(projectID, "✅ sandbox resumed, branch: `kaptaan`")
                         return runtime, nil
                 }
                 // Saved ID is stale — fall through to create a fresh sandbox.
-                log.Printf("[agent] sandbox reconnect failed (%v) — creating new one", err)
-                _ = a.db.SetConfig(ctx, "_sandbox_id", "")
+                log.Printf("[agent] sandbox resume failed (%v) — creating new one", err)
+                _ = a.db.SetConfig(ctx, projectID, "_sandbox_id", "")
         }
 
         a.hooks.Send(projectID, "🛠 spinning up sandbox…")
@@ -469,7 +489,7 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
         // Persist sandbox reference for future reconnects (stored in config, not
         // memories, so the agent cannot accidentally delete it).
         sandboxRef := sb.ID + ":" + sb.ClientID
-        if err := a.db.SetConfig(ctx, "_sandbox_id", sandboxRef); err != nil {
+        if err := a.db.SetConfig(ctx, projectID, "_sandbox_id", sandboxRef); err != nil {
                 log.Printf("[agent] failed to store sandbox id: %v", err)
         }
 
@@ -486,8 +506,8 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 log.Printf("[agent] mkdir workspace: %s", r.Output)
         }
 
-        repoURL := normalizeRepoURL(a.db.GetConfig(ctx, "repo_url"))
-        githubToken := a.db.GetConfig(ctx, "github_token")
+        repoURL := normalizeRepoURL(a.db.GetConfig(ctx, projectID, "repo_url"))
+        githubToken := a.db.GetConfig(ctx, projectID, "github_token")
 
         if repoURL != "" && githubToken != "" {
                 cloneURL := injectToken(repoURL, githubToken)
@@ -527,20 +547,25 @@ func (a *Agent) ReadScratchpad(ctx context.Context, projectID int) (string, erro
         }
 
         // No in-memory sandbox — try to reconnect to a paused one from DB.
-        e2bKey := a.db.GetConfig(ctx, "e2b_api_key")
+        e2bKey := a.db.GetConfig(ctx, projectID, "e2b_api_key")
         if e2bKey == "" {
                 return "", fmt.Errorf("no active sandbox")
         }
-        savedID := a.db.GetConfig(ctx, "_sandbox_id")
+        savedID := a.db.GetConfig(ctx, projectID, "_sandbox_id")
         if savedID == "" {
                 return "", fmt.Errorf("no active sandbox — send a task first")
         }
-        sb, err := sandbox.Connect(ctx, e2bKey, savedID)
-        if err != nil {
-                return "", fmt.Errorf("sandbox unavailable: %w", err)
+        // Ping first — if still running, reuse without /resume.
+        handle := sandbox.NewHandle(e2bKey, savedID)
+        if handle.ID == "" || !handle.Ping(ctx) {
+                var err error
+                handle, err = sandbox.Connect(ctx, e2bKey, savedID)
+                if err != nil {
+                        return "", fmt.Errorf("sandbox unavailable: %w", err)
+                }
         }
         rt := &tools.SandboxRuntime{
-                Sandbox: sb,
+                Sandbox: handle,
                 Cwd:     "/home/user/workspace",
                 Env: map[string]string{
                         "HOME": "/home/user",
@@ -577,7 +602,7 @@ func (t *turn) systemPrompt() string {
 	ctx := context.Background()
 	mems, _ := t.a.db.ListMemories(ctx, t.projectID)
 
-	if custom := t.a.db.GetConfig(ctx, "system_prompt"); custom != "" {
+	if custom := t.a.db.GetConfig(ctx, t.projectID, "system_prompt"); custom != "" {
 		var b strings.Builder
 		b.WriteString(custom)
 		if len(mems) > 0 {
@@ -779,7 +804,7 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
 	case "ssh_read":
 		host := getStr(args, "host")
 		remote := getStr(args, "remote_path")
-		if host == "" || content == "" || remote == "" {
+		if host == "" || remote == "" {
 			return "ERROR: ssh_read requires `host` and `remote_path`"
 		}
 		return t.sshRead(ctx, host, remote)

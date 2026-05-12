@@ -83,11 +83,11 @@ type cfResultInfo struct {
 }
 
 func (t *turn) cfToken(ctx context.Context) string {
-	return t.a.db.GetConfig(ctx, "cf_api_token")
+	return t.a.db.GetConfig(ctx, t.projectID, "cf_api_token")
 }
 
 func (t *turn) cfZoneID(ctx context.Context) string {
-	if z := t.a.db.GetConfig(ctx, "cf_zone_id"); z != "" {
+	if z := t.a.db.GetConfig(ctx, t.projectID, "cf_zone_id"); z != "" {
 		return z
 	}
 	return ""

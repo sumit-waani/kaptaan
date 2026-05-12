@@ -19,13 +19,14 @@ var knownConfigKeys = []string{
 	"ssh_hosts",
 }
 
-// GET  /api/config  → {config: {key: value, ...}}
-// POST /api/config  → body {key, value} → upserts one entry
+// GET  /api/config?project_id=1  → {config: {key: value, ...}}
+// POST /api/config?project_id=1  → body {key, value} → upserts one entry
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	projectID := getProjectID(r)
 	switch r.Method {
 	case http.MethodGet:
-		cfg, err := s.db.ListConfig(ctx)
+		cfg, err := s.db.ListConfig(ctx, projectID)
 		if err != nil {
 			jsonErr(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -48,7 +49,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, "invalid JSON / missing key", http.StatusBadRequest)
 			return
 		}
-		if err := s.db.SetConfig(ctx, body.Key, body.Value); err != nil {
+		if err := s.db.SetConfig(ctx, projectID, body.Key, body.Value); err != nil {
 			jsonErr(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

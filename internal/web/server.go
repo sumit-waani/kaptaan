@@ -1,5 +1,4 @@
-// Package web hosts the HTTP API + embedded UI. Single-project: all requests
-// operate on fixedProjectID = 1. No project switching or selection needed.
+// Package web hosts the HTTP API + embedded UI (multi-project).
 package web
 
 import (
@@ -17,7 +16,6 @@ import (
         "github.com/cto-agent/cto-agent/internal/db"
 )
 
-const fixedProjectID = 1
 
 // Agent is the surface the web layer needs.
 type Agent interface {
@@ -104,6 +102,19 @@ func New(database *db.DB) *Server {
 }
 
 func (s *Server) SetAgent(a Agent) { s.agent = a }
+
+// getProjectID extracts project ID from query param, defaulting to 1.
+func getProjectID(r *http.Request) int {
+        s := r.URL.Query().Get("project_id")
+        if s == "" {
+                return 1
+        }
+        var id int
+        if _, err := fmt.Sscanf(s, "%d", &id); err != nil || id <= 0 {
+                return 1
+        }
+        return id
+}
 
 func (s *Server) SetMOTD(msg string) {
         s.mu.Lock()
@@ -270,6 +281,8 @@ func (s *Server) Start(ctx context.Context) {
         mux.HandleFunc("/api/scratchpad", s.requireAuth(s.handleScratchpad))
         mux.HandleFunc("/api/task/cancel", s.requireAuth(s.handleCancelTask))
         mux.HandleFunc("/api/config", s.requireAuth(s.handleConfig))
+        mux.HandleFunc("/api/projects", s.requireAuth(s.handleProjects))
+        mux.HandleFunc("/api/projects/create", s.requireAuth(s.handleProjectCreate))
 
         addrs := []string{"0.0.0.0:80", "0.0.0.0:5000"}
         servers := make([]*http.Server, len(addrs))
@@ -313,7 +326,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
                 http.Error(w, "GET required", http.StatusMethodNotAllowed)
                 return
         }
-        uiMsgs, err := s.db.LoadUIMessages(r.Context(), fixedProjectID)
+        uiMsgs, err := s.db.LoadUIMessages(r.Context(), getProjectID(r))
         if err != nil {
                 log.Printf("[web] LoadUIMessages (history): %v", err)
                 jsonErr(w, "failed to load history", http.StatusInternalServerError)
@@ -342,19 +355,19 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Connection", "keep-alive")
         w.Header().Set("X-Accel-Buffering", "no")
 
-        c := &sseClient{projectID: fixedProjectID, ch: make(chan string, 1024)}
+        c := &sseClient{projectID: getProjectID(r), ch: make(chan string, 1024)}
         s.hub.add(c)
         defer s.hub.remove(c)
 
         if s.agent != nil {
                 data, _ := json.Marshal(map[string]interface{}{
-                        "running": s.agent.IsRunning(fixedProjectID),
-                        "queued":  s.agent.HasQueued(fixedProjectID),
+                        "running": s.agent.IsRunning(getProjectID(r)),
+                        "queued":  s.agent.HasQueued(getProjectID(r)),
                 })
                 fmt.Fprintf(w, "event: state\ndata: %s\n\n", data)
         }
         s.mu.Lock()
-        pa := s.pending[fixedProjectID]
+        pa := s.pending[getProjectID(r)]
         motd := s.motd
         s.mu.Unlock()
         if pa != nil {
@@ -411,20 +424,21 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
         echoSSE := "event: msg\ndata: " + string(echo) + "\n\n"
 
         // Persist user message for reconnect replay.
-        if err := s.db.AppendMessage(r.Context(), fixedProjectID,
+        if err := s.db.AppendMessage(r.Context(), getProjectID(r),
                 "", "", "", "", "", "user", payload.Text, ts,
         ); err != nil {
                 log.Printf("[web] AppendMessage (user echo): %v", err)
         }
-        s.hub.broadcast(fixedProjectID, echoSSE)
+        s.hub.broadcast(getProjectID(r), echoSSE)
 
         if s.agent == nil {
                 jsonErr(w, "agent not configured", http.StatusServiceUnavailable)
                 return
         }
+        projectID := getProjectID(r)
         go func(text string) {
-                if err := s.agent.HandleUserMessage(context.Background(), fixedProjectID, text); err != nil {
-                        s.SendToProject(fixedProjectID, "❌ "+err.Error())
+                if err := s.agent.HandleUserMessage(context.Background(), projectID, text); err != nil {
+                        s.SendToProject(projectID, "❌ "+err.Error())
                 }
         }(payload.Text)
         jsonOK(w, map[string]string{"ok": "queued"})
@@ -449,7 +463,7 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
                 return
         }
         s.mu.Lock()
-        pa := s.pending[fixedProjectID]
+        pa := s.pending[getProjectID(r)]
         s.mu.Unlock()
         if pa == nil {
                 jsonErr(w, "no pending question", http.StatusBadRequest)
@@ -463,12 +477,12 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
                         "type": "reply", "text": replyText, "ts": ts,
                 })
                 // Persist reply for reconnect replay.
-                if err := s.db.AppendMessage(r.Context(), fixedProjectID,
+                if err := s.db.AppendMessage(r.Context(), getProjectID(r),
                         "", "", "", "", "", "reply", replyText, ts,
                 ); err != nil {
                         log.Printf("[web] AppendMessage (reply): %v", err)
                 }
-                s.hub.broadcast(fixedProjectID, "event: msg\ndata: "+string(echo)+"\n\n")
+                s.hub.broadcast(getProjectID(r), "event: msg\ndata: "+string(echo)+"\n\n")
                 jsonOK(w, map[string]string{"ok": "sent"})
         default:
                 jsonErr(w, "reply channel full", http.StatusConflict)
@@ -481,15 +495,15 @@ func (s *Server) handleClearConvo(w http.ResponseWriter, r *http.Request) {
                 return
         }
         // Clear both LLM convo rows and UI display rows from DB.
-        if err := s.db.ClearMessages(r.Context(), fixedProjectID); err != nil {
+        if err := s.db.ClearMessages(r.Context(), getProjectID(r)); err != nil {
                 log.Printf("[web] ClearMessages: %v", err)
         }
         if s.agent != nil {
                 // ResetConversation also calls ClearMessages; no-op here but kept for
                 // any future in-memory state the agent might hold.
-                s.agent.ResetConversation(fixedProjectID)
+                s.agent.ResetConversation(getProjectID(r))
         }
-        s.SendToProject(fixedProjectID, "🧹 Conversation cleared.")
+        s.SendToProject(getProjectID(r), "🧹 Conversation cleared.")
         jsonOK(w, map[string]string{"ok": "cleared"})
 }
 
@@ -502,7 +516,7 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
                 jsonErr(w, "agent not configured", http.StatusServiceUnavailable)
                 return
         }
-        if !s.agent.CancelTask(fixedProjectID) {
+        if !s.agent.CancelTask(getProjectID(r)) {
                 jsonErr(w, "no task running", http.StatusBadRequest)
                 return
         }
@@ -516,7 +530,7 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
                 http.Error(w, "GET required", http.StatusMethodNotAllowed)
                 return
         }
-        key := s.db.GetConfig(r.Context(), "deepseek_api_key")
+        key := s.db.GetConfig(r.Context(), getProjectID(r), "deepseek_api_key")
         if key == "" {
                 jsonErr(w, "deepseek_api_key not configured — set it in Settings → Configuration", http.StatusServiceUnavailable)
                 return
@@ -537,6 +551,45 @@ func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "application/json")
         w.WriteHeader(resp.StatusCode)
         _, _ = w.Write(data)
+}
+
+// ─── Projects ──────────────────────────────────────────────────────────────
+
+func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet {
+                http.Error(w, "GET required", http.StatusMethodNotAllowed)
+                return
+        }
+        projects, err := s.db.ListProjects(r.Context())
+        if err != nil {
+                jsonErr(w, err.Error(), http.StatusInternalServerError)
+                return
+        }
+        if projects == nil {
+                projects = []db.Project{}
+        }
+        jsonOK(w, map[string]interface{}{"projects": projects})
+}
+
+func (s *Server) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+                http.Error(w, "POST required", http.StatusMethodNotAllowed)
+                return
+        }
+        var body struct {
+                Name string `json:"name"`
+        }
+        raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+        if err := json.Unmarshal(raw, &body); err != nil || body.Name == "" {
+                jsonErr(w, "invalid JSON / missing name", http.StatusBadRequest)
+                return
+        }
+        id, err := s.db.CreateProject(r.Context(), body.Name)
+        if err != nil {
+                jsonErr(w, err.Error(), http.StatusInternalServerError)
+                return
+        }
+        jsonOK(w, map[string]interface{}{"id": id, "name": body.Name})
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -561,7 +614,7 @@ func (s *Server) handleScratchpad(w http.ResponseWriter, r *http.Request) {
                 jsonErr(w, "agent not configured", http.StatusServiceUnavailable)
                 return
         }
-        content, err := s.agent.ReadScratchpad(r.Context(), fixedProjectID)
+        content, err := s.agent.ReadScratchpad(r.Context(), getProjectID(r))
         if err != nil {
                 jsonErr(w, err.Error(), http.StatusInternalServerError)
                 return

@@ -23,7 +23,7 @@ type sshHostsConfig map[string]sshHostConfig
 
 // loadSSHHosts reads the ssh_hosts config from DB and unmarshals it.
 func (t *turn) loadSSHHosts(ctx context.Context) (sshHostsConfig, error) {
-	raw := t.a.db.GetConfig(ctx, "ssh_hosts")
+	raw := t.a.db.GetConfig(ctx, t.projectID, "ssh_hosts")
 	if raw == "" {
 		return nil, fmt.Errorf("ssh_hosts config is empty — set it in Settings → Configuration")
 	}

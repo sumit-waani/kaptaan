@@ -158,11 +158,11 @@ func githubMergePR(ctx context.Context, token, owner, repo string, number int) (
 // ─── New GitHub tools (turn methods) ──────────────────────────────────────────
 
 func (t *turn) ghToken(ctx context.Context) string {
-	return t.a.db.GetConfig(ctx, "github_token")
+	return t.a.db.GetConfig(ctx, t.projectID, "github_token")
 }
 
 func (t *turn) ghOwnerRepo(ctx context.Context) (string, string, error) {
-	repoURL := t.a.db.GetConfig(ctx, "repo_url")
+	repoURL := t.a.db.GetConfig(ctx, t.projectID, "repo_url")
 	if repoURL == "" {
 		return "", "", fmt.Errorf("repo_url is not configured")
 	}

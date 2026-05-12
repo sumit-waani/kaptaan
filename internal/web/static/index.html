@@ -61,6 +61,11 @@
     </button>
   </header>
 
+  <div class="project-bar">
+    <select id="project-select" class="project-select"></select>
+    <button id="project-new-btn" class="project-new-btn" title="new project">+</button>
+  </div>
+
   <div id="feed" class="feed"></div>
 
   <div id="ask-banner" class="ask-banner" style="display:none">
@@ -161,10 +166,10 @@
       </div>
       <div class="settings-section-label" style="margin-top:16px">
         system prompt
-        <span style="font-size:10px;color:var(--dim);text-transform:none;letter-spacing:0">&nbsp;(empty = use built-in)</span>
+        <span style="font-size:10px;color:var(--dim);text-transform:none;letter-spacing:0">&nbsp;(required — no fallback)</span>
       </div>
       <textarea id="cfg-system-prompt" class="cfg-textarea"
-        placeholder="Leave empty to use the built-in Kaptaan prompt. Paste a custom system prompt here to fully replace it." rows="5"></textarea>
+        placeholder="The Kaptaan system prompt. Must be set — there is no hardcoded fallback. Customise it here." rows="5"></textarea>
       <p id="cfg-error" class="err-msg" style="display:none"></p>
       <div class="settings-section-label" style="margin-top:16px">cloudflare</div>
       <div class="settings-card">
