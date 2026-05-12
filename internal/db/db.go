@@ -38,7 +38,9 @@ func New(_ context.Context, _ string) (*DB, error) {
 
 func (d *DB) Close() { d.db.Close() }
 
-const schema = `
+// schemaBase creates the core tables (no indexes that reference columns added
+// via ALTER TABLE, so this is safe to run against any existing schema).
+const schemaBase = `
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     username      TEXT NOT NULL UNIQUE,
@@ -54,17 +56,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE TABLE IF NOT EXISTS memories (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id  INTEGER NOT NULL,
     key         TEXT NOT NULL,
     content     TEXT NOT NULL,
-    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (project_id, key)
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS memories_project_idx ON memories(project_id);
 
 CREATE TABLE IF NOT EXISTS messages (
     id                INTEGER  PRIMARY KEY AUTOINCREMENT,
-    project_id        INTEGER  NOT NULL,
     role              TEXT     NOT NULL DEFAULT '',
     content           TEXT     NOT NULL DEFAULT '',
     reasoning_content TEXT     NOT NULL DEFAULT '',
@@ -75,7 +73,6 @@ CREATE TABLE IF NOT EXISTS messages (
     ui_ts             TEXT     NOT NULL DEFAULT '',
     created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS messages_project_idx ON messages(project_id);
 
 CREATE TABLE IF NOT EXISTS projects (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,21 +83,72 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE TABLE IF NOT EXISTS config (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL DEFAULT 1,
     key        TEXT    NOT NULL,
     value      TEXT    NOT NULL DEFAULT '',
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (project_id, key)
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS config_project_idx ON config(project_id);
-
 `
 
 func (d *DB) migrate() error {
-        if _, err := d.db.Exec(schema); err != nil {
+        // Step 1: create tables without any column references that may not exist yet.
+        if _, err := d.db.Exec(schemaBase); err != nil {
                 return err
         }
+
+        // Step 2: additive column migrations — safe to re-run; duplicate-column errors are ignored.
+        alterations := []string{
+                `ALTER TABLE config    ADD COLUMN project_id INTEGER NOT NULL DEFAULT 1`,
+                `ALTER TABLE memories  ADD COLUMN project_id INTEGER NOT NULL DEFAULT 1`,
+                `ALTER TABLE messages  ADD COLUMN project_id INTEGER NOT NULL DEFAULT 1`,
+                `ALTER TABLE config    ADD COLUMN UNIQUE_project_key TEXT`,   // placeholder, dropped below
+        }
+        // Only the first three matter; drop the placeholder entry.
+        alterations = alterations[:3]
+        for _, stmt := range alterations {
+                if _, err := d.db.Exec(stmt); err != nil {
+                        if !isSQLiteColumnExists(err) {
+                                return err
+                        }
+                }
+        }
+
+        // Step 3: create indexes and unique constraints now that project_id exists everywhere.
+        indexes := []string{
+                `CREATE INDEX IF NOT EXISTS memories_project_idx ON memories(project_id)`,
+                `CREATE INDEX IF NOT EXISTS messages_project_idx ON messages(project_id)`,
+                `CREATE INDEX IF NOT EXISTS config_project_idx   ON config(project_id)`,
+                `CREATE UNIQUE INDEX IF NOT EXISTS memories_project_key_uidx ON memories(project_id, key)`,
+                `CREATE UNIQUE INDEX IF NOT EXISTS config_project_key_uidx   ON config(project_id, key)`,
+        }
+        for _, stmt := range indexes {
+                if _, err := d.db.Exec(stmt); err != nil {
+                        return err
+                }
+        }
         return nil
+}
+
+// isSQLiteColumnExists returns true when the error is SQLite's "duplicate column name" error,
+// which is raised when we try to ADD a column that already exists.
+func isSQLiteColumnExists(err error) bool {
+        if err == nil {
+                return false
+        }
+        s := err.Error()
+        return contains(s, "duplicate column name") || contains(s, "already exists")
+}
+
+func contains(s, sub string) bool {
+        return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
+}
+
+func containsStr(s, sub string) bool {
+        for i := 0; i <= len(s)-len(sub); i++ {
+                if s[i:i+len(sub)] == sub {
+                        return true
+                }
+        }
+        return false
 }
 
 // ─── Projects ───────────────────────────────────────────────────────────────
