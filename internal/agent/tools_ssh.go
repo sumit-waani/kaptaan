@@ -22,8 +22,8 @@ type sshHostConfig struct {
 type sshHostsConfig map[string]sshHostConfig
 
 // loadSSHHosts reads the ssh_hosts config from DB and unmarshals it.
-func (t *turn) loadSSHHosts() (sshHostsConfig, error) {
-	raw := t.a.db.GetConfig(context.Background(), "ssh_hosts")
+func (t *turn) loadSSHHosts(ctx context.Context) (sshHostsConfig, error) {
+	raw := t.a.db.GetConfig(ctx, "ssh_hosts")
 	if raw == "" {
 		return nil, fmt.Errorf("ssh_hosts config is empty — set it in Settings → Configuration")
 	}
@@ -56,7 +56,7 @@ func getSSHClient(cfg sshHostConfig, timeout time.Duration) (*ssh.Client, error)
 
 // sshExec runs a command on the named host and returns stdout+stderr+exit code.
 func (t *turn) sshExec(ctx context.Context, host, cmd string, timeoutSecs int) string {
-	hosts, err := t.loadSSHHosts()
+	hosts, err := t.loadSSHHosts(ctx)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -117,7 +117,7 @@ func (t *turn) sshExec(ctx context.Context, host, cmd string, timeoutSecs int) s
 
 // sshUpload writes content to a file on a remote host.
 func (t *turn) sshUpload(ctx context.Context, host, localContent, remotePath string) string {
-	hosts, err := t.loadSSHHosts()
+	hosts, err := t.loadSSHHosts(ctx)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -157,7 +157,7 @@ func (t *turn) sshUpload(ctx context.Context, host, localContent, remotePath str
 
 // sshRead reads a file from a remote host.
 func (t *turn) sshRead(ctx context.Context, host, remotePath string) string {
-	hosts, err := t.loadSSHHosts()
+	hosts, err := t.loadSSHHosts(ctx)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}

@@ -116,7 +116,7 @@ var allTools = []llm.Tool{
                 obj(map[string]interface{}{
                         "title": sprop("issue title"),
                         "body":  sprop("issue body (markdown)"),
-                }, "title", "body")),
+                }, "title")),
         mkTool("gh_close_issue", "Close an issue on the configured GitHub repo by number.",
                 obj(map[string]interface{}{
                         "number": iprop("issue number to close"),

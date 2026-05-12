@@ -82,12 +82,12 @@ type cfResultInfo struct {
 	TotalCount int `json:"total_count"`
 }
 
-func (t *turn) cfToken() string {
-	return t.a.db.GetConfig(context.Background(), "cf_api_token")
+func (t *turn) cfToken(ctx context.Context) string {
+	return t.a.db.GetConfig(ctx, "cf_api_token")
 }
 
-func (t *turn) cfZoneID() string {
-	if z := t.a.db.GetConfig(context.Background(), "cf_zone_id"); z != "" {
+func (t *turn) cfZoneID(ctx context.Context) string {
+	if z := t.a.db.GetConfig(ctx, "cf_zone_id"); z != "" {
 		return z
 	}
 	return ""
@@ -120,8 +120,8 @@ func cfReq(ctx context.Context, token, method, path string, body interface{}) ([
 
 // cfListDNSRecords lists DNS records, optionally filtered by type.
 func (t *turn) cfListDNS(ctx context.Context, recordType string) string {
-	token := t.cfToken()
-	zone := t.cfZoneID()
+	token := t.cfToken(ctx)
+	zone := t.cfZoneID(ctx)
 	if token == "" {
 		return "ERROR: cf_api_token is not configured"
 	}
@@ -165,8 +165,8 @@ func (t *turn) cfListDNS(ctx context.Context, recordType string) string {
 
 // cfCreateDNS creates a new DNS record.
 func (t *turn) cfCreateDNS(ctx context.Context, recordType, name, content string, ttl int, proxied bool) string {
-	token := t.cfToken()
-	zone := t.cfZoneID()
+	token := t.cfToken(ctx)
+	zone := t.cfZoneID(ctx)
 	if token == "" {
 		return "ERROR: cf_api_token is not configured"
 	}
@@ -205,8 +205,8 @@ func (t *turn) cfCreateDNS(ctx context.Context, recordType, name, content string
 
 // cfUpdateDNS updates an existing DNS record's name, content, and proxied status.
 func (t *turn) cfUpdateDNS(ctx context.Context, recordID, recordType, name, content string, proxied bool) string {
-	token := t.cfToken()
-	zone := t.cfZoneID()
+	token := t.cfToken(ctx)
+	zone := t.cfZoneID(ctx)
 	if token == "" {
 		return "ERROR: cf_api_token is not configured"
 	}
@@ -244,8 +244,8 @@ func (t *turn) cfUpdateDNS(ctx context.Context, recordID, recordType, name, cont
 
 // cfDeleteDNS deletes a DNS record by ID.
 func (t *turn) cfDeleteDNS(ctx context.Context, recordID string) string {
-	token := t.cfToken()
-	zone := t.cfZoneID()
+	token := t.cfToken(ctx)
+	zone := t.cfZoneID(ctx)
 	if token == "" {
 		return "ERROR: cf_api_token is not configured"
 	}
@@ -272,8 +272,8 @@ func (t *turn) cfDeleteDNS(ctx context.Context, recordID string) string {
 
 // cfPurgeCache purges cache for specified files or everything.
 func (t *turn) cfPurgeCache(ctx context.Context, files string) string {
-	token := t.cfToken()
-	zone := t.cfZoneID()
+	token := t.cfToken(ctx)
+	zone := t.cfZoneID(ctx)
 	if token == "" {
 		return "ERROR: cf_api_token is not configured"
 	}
@@ -312,8 +312,8 @@ func (t *turn) cfPurgeCache(ctx context.Context, files string) string {
 
 // cfGetAnalytics returns basic zone analytics for the given time window.
 func (t *turn) cfGetAnalytics(ctx context.Context, sinceHours int) string {
-	token := t.cfToken()
-	zone := t.cfZoneID()
+	token := t.cfToken(ctx)
+	zone := t.cfZoneID(ctx)
 	if token == "" {
 		return "ERROR: cf_api_token is not configured"
 	}

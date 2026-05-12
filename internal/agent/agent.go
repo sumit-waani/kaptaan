@@ -846,8 +846,8 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
 	case "gh_create_issue":
 		title := getStr(args, "title")
 		body := getStr(args, "body")
-		if title == "" || body == "" {
-			return "ERROR: gh_create_issue requires `title` and `body`"
+		if title == "" {
+			return "ERROR: gh_create_issue requires `title`"
 		}
 		return t.ghCreateIssue(ctx, title, body)
 

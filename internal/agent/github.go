@@ -157,25 +157,25 @@ func githubMergePR(ctx context.Context, token, owner, repo string, number int) (
 
 // ─── New GitHub tools (turn methods) ──────────────────────────────────────────
 
-func (t *turn) ghToken() string {
-	return t.a.db.GetConfig(context.Background(), "github_token")
+func (t *turn) ghToken(ctx context.Context) string {
+	return t.a.db.GetConfig(ctx, "github_token")
 }
 
-func (t *turn) ghOwnerRepo() (string, string, error) {
-	repoURL := t.a.db.GetConfig(context.Background(), "repo_url")
+func (t *turn) ghOwnerRepo(ctx context.Context) (string, string, error) {
+	repoURL := t.a.db.GetConfig(ctx, "repo_url")
 	if repoURL == "" {
 		return "", "", fmt.Errorf("repo_url is not configured")
 	}
 	return parseOwnerRepo(repoURL)
 }
 
-// ghListIssues lists open/closed/all issues.
+// ghListIssues lists open/closed/all issues. Paginates through all results.
 func (t *turn) ghListIssues(ctx context.Context, state string) string {
-	token := t.ghToken()
+	token := t.ghToken(ctx)
 	if token == "" {
 		return "ERROR: github_token is not configured"
 	}
-	owner, repo, err := t.ghOwnerRepo()
+	owner, repo, err := t.ghOwnerRepo(ctx)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -183,23 +183,37 @@ func (t *turn) ghListIssues(ctx context.Context, state string) string {
 		state = "open"
 	}
 
-	data, status, err := githubReq(ctx, token, "GET",
-		fmt.Sprintf("/repos/%s/%s/issues?state=%s&per_page=50", owner, repo, state), nil)
-	if err != nil {
-		return "ERROR: " + err.Error()
+	const perPage = 100
+	var all []ghIssue
+	page := 1
+	for {
+		url := fmt.Sprintf("/repos/%s/%s/issues?state=%s&per_page=%d&page=%d", owner, repo, state, perPage, page)
+		data, status, err := githubReq(ctx, token, "GET", url, nil)
+		if err != nil {
+			return "ERROR: " + err.Error()
+		}
+		if status >= 300 {
+			return fmt.Sprintf("ERROR: GitHub API returned %d: %s", status, truncate(string(data), 400))
+		}
+		var pageIssues []ghIssue
+		if err := json.Unmarshal(data, &pageIssues); err != nil {
+			return "ERROR: parse: " + err.Error()
+		}
+		all = append(all, pageIssues...)
+		if len(pageIssues) < perPage {
+			break
+		}
+		page++
+		if page > 20 { // safety cap: 2000 issues max
+			break
+		}
 	}
-	if status >= 300 {
-		return fmt.Sprintf("ERROR: GitHub API returned %d: %s", status, truncate(string(data), 400))
-	}
-	var issues []ghIssue
-	if err := json.Unmarshal(data, &issues); err != nil {
-		return "ERROR: parse: " + err.Error()
-	}
-	if len(issues) == 0 {
+
+	if len(all) == 0 {
 		return "(no " + state + " issues)"
 	}
 	var b strings.Builder
-	for _, iss := range issues {
+	for _, iss := range all {
 		body := strings.SplitN(iss.Body, "\n", 2)[0]
 		b.WriteString(fmt.Sprintf("#%d [%s] %s — %s\n", iss.Number, iss.State, iss.Title, truncate(body, 120)))
 	}
@@ -208,11 +222,11 @@ func (t *turn) ghListIssues(ctx context.Context, state string) string {
 
 // ghCreateIssue creates a new issue.
 func (t *turn) ghCreateIssue(ctx context.Context, title, body string) string {
-	token := t.ghToken()
+	token := t.ghToken(ctx)
 	if token == "" {
 		return "ERROR: github_token is not configured"
 	}
-	owner, repo, err := t.ghOwnerRepo()
+	owner, repo, err := t.ghOwnerRepo(ctx)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -235,11 +249,11 @@ func (t *turn) ghCreateIssue(ctx context.Context, title, body string) string {
 
 // ghCloseIssue closes an issue by number.
 func (t *turn) ghCloseIssue(ctx context.Context, number int) string {
-	token := t.ghToken()
+	token := t.ghToken(ctx)
 	if token == "" {
 		return "ERROR: github_token is not configured"
 	}
-	owner, repo, err := t.ghOwnerRepo()
+	owner, repo, err := t.ghOwnerRepo(ctx)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -258,11 +272,11 @@ func (t *turn) ghCloseIssue(ctx context.Context, number int) string {
 
 // ghListWorkflows lists GitHub Actions workflows.
 func (t *turn) ghListWorkflows(ctx context.Context) string {
-	token := t.ghToken()
+	token := t.ghToken(ctx)
 	if token == "" {
 		return "ERROR: github_token is not configured"
 	}
-	owner, repo, err := t.ghOwnerRepo()
+	owner, repo, err := t.ghOwnerRepo(ctx)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -292,11 +306,11 @@ func (t *turn) ghListWorkflows(ctx context.Context) string {
 
 // ghTriggerWorkflow triggers a workflow dispatch.
 func (t *turn) ghTriggerWorkflow(ctx context.Context, workflowID, ref string) string {
-	token := t.ghToken()
+	token := t.ghToken(ctx)
 	if token == "" {
 		return "ERROR: github_token is not configured"
 	}
-	owner, repo, err := t.ghOwnerRepo()
+	owner, repo, err := t.ghOwnerRepo(ctx)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -318,11 +332,11 @@ func (t *turn) ghTriggerWorkflow(ctx context.Context, workflowID, ref string) st
 
 // ghGetWorkflowRun gets the status of a specific workflow run.
 func (t *turn) ghGetWorkflowRun(ctx context.Context, runID int) string {
-	token := t.ghToken()
+	token := t.ghToken(ctx)
 	if token == "" {
 		return "ERROR: github_token is not configured"
 	}
-	owner, repo, err := t.ghOwnerRepo()
+	owner, repo, err := t.ghOwnerRepo(ctx)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -345,11 +359,11 @@ func (t *turn) ghGetWorkflowRun(ctx context.Context, runID int) string {
 
 // ghListBranches lists branches in the repo.
 func (t *turn) ghListBranches(ctx context.Context) string {
-	token := t.ghToken()
+	token := t.ghToken(ctx)
 	if token == "" {
 		return "ERROR: github_token is not configured"
 	}
-	owner, repo, err := t.ghOwnerRepo()
+	owner, repo, err := t.ghOwnerRepo(ctx)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -378,11 +392,11 @@ func (t *turn) ghListBranches(ctx context.Context) string {
 
 // ghDeleteBranch deletes a branch from the repo.
 func (t *turn) ghDeleteBranch(ctx context.Context, branch string) string {
-	token := t.ghToken()
+	token := t.ghToken(ctx)
 	if token == "" {
 		return "ERROR: github_token is not configured"
 	}
-	owner, repo, err := t.ghOwnerRepo()
+	owner, repo, err := t.ghOwnerRepo(ctx)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
@@ -400,11 +414,11 @@ func (t *turn) ghDeleteBranch(ctx context.Context, branch string) string {
 
 // ghGetFile fetches file content directly from the GitHub repo API.
 func (t *turn) ghGetFile(ctx context.Context, path, ref string) string {
-	token := t.ghToken()
+	token := t.ghToken(ctx)
 	if token == "" {
 		return "ERROR: github_token is not configured"
 	}
-	owner, repo, err := t.ghOwnerRepo()
+	owner, repo, err := t.ghOwnerRepo(ctx)
 	if err != nil {
 		return "ERROR: " + err.Error()
 	}
