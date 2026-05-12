@@ -876,51 +876,6 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 }
                 return t.ghGetFile(ctx, path, ref)
 
-        // ── Cloudflare tools ──
-        case "cf_list_dns_records":
-                recType := getStr(args, "type")
-                return t.cfListDNS(ctx, recType)
-
-        case "cf_create_dns":
-                recType := getStr(args, "type")
-                name := getStr(args, "name")
-                content := getStr(args, "content")
-                ttl := getInt(args, "ttl", 1)
-                proxied := getBool(args, "proxied", false)
-                if recType == "" || name == "" || content == "" {
-                        return "ERROR: cf_create_dns requires `type`, `name`, and `content`"
-                }
-                return t.cfCreateDNS(ctx, recType, name, content, ttl, proxied)
-
-        case "cf_update_dns":
-                recID := getStr(args, "record_id")
-                recType := getStr(args, "type")
-                name := getStr(args, "name")
-                content := getStr(args, "content")
-                proxied := getBool(args, "proxied", false)
-                if recID == "" || recType == "" || name == "" || content == "" {
-                        return "ERROR: cf_update_dns requires `record_id`, `type`, `name`, and `content`"
-                }
-                return t.cfUpdateDNS(ctx, recID, recType, name, content, proxied)
-
-        case "cf_delete_dns":
-                recID := getStr(args, "record_id")
-                if recID == "" {
-                        return "ERROR: cf_delete_dns requires `record_id`"
-                }
-                return t.cfDeleteDNS(ctx, recID)
-
-        case "cf_purge_cache":
-                files := getStr(args, "files")
-                if files == "" {
-                        return "ERROR: cf_purge_cache requires `files`"
-                }
-                return t.cfPurgeCache(ctx, files)
-
-        case "cf_get_analytics":
-                sinceHours := getInt(args, "since_hours", 24)
-                return t.cfGetAnalytics(ctx, sinceHours)
-
         default:
                 return fmt.Sprintf("ERROR: unknown tool %q", name)
         }

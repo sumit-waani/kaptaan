@@ -144,37 +144,4 @@ var allTools = []llm.Tool{
                         "ref":  sprop("git ref (branch, tag, SHA) — default main"),
                 }, "path")),
 
-        // ── Cloudflare tools ──
-        mkTool("cf_list_dns_records", "List DNS records for the configured Cloudflare zone.",
-                obj(map[string]interface{}{
-                        "type": sprop("optional DNS record type filter (A, AAAA, CNAME, MX, TXT, etc.)"),
-                })),
-        mkTool("cf_create_dns", "Create a DNS record in the configured Cloudflare zone.",
-                obj(map[string]interface{}{
-                        "type":    sprop("record type: A, AAAA, CNAME, MX, TXT, etc."),
-                        "name":    sprop("DNS name (e.g. 'www.example.com')"),
-                        "content": sprop("record content (e.g. IP address or target)"),
-                        "ttl":     iprop("TTL in seconds (use 1 for automatic)"),
-                        "proxied": bprop("enable Cloudflare proxy (orange cloud) — default false"),
-                }, "type", "name", "content")),
-        mkTool("cf_update_dns", "Update an existing DNS record in the configured Cloudflare zone.",
-                obj(map[string]interface{}{
-                        "record_id": sprop("record ID to update (from cf_list_dns_records)"),
-                        "type":      sprop("record type: A, AAAA, CNAME, MX, TXT, etc."),
-                        "name":      sprop("DNS name (e.g. 'www.example.com')"),
-                        "content":   sprop("record content (e.g. IP address or target)"),
-                        "proxied":   bprop("enable Cloudflare proxy (orange cloud) — default false"),
-                }, "record_id", "type", "name", "content")),
-        mkTool("cf_delete_dns", "Delete a DNS record from the configured Cloudflare zone.",
-                obj(map[string]interface{}{
-                        "record_id": sprop("record ID to delete (from cf_list_dns_records)"),
-                }, "record_id")),
-        mkTool("cf_purge_cache", "Purge Cloudflare cache for specific URLs or everything.",
-                obj(map[string]interface{}{
-                        "files": sprop("comma-separated URLs to purge, or 'everything' / '*' to purge all"),
-                }, "files")),
-        mkTool("cf_get_analytics", "Get basic zone analytics from Cloudflare for a time window.",
-                obj(map[string]interface{}{
-                        "since_hours": iprop("lookback window in hours (default 24, max 72)"),
-                })),
 }

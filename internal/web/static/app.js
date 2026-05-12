@@ -735,8 +735,6 @@ async function loadConfig() {
   const set = (id, key) => { const el = document.getElementById(id); if (el && c[key] !== undefined) el.value = c[key]; };
   set('cfg-repo-url',     'repo_url');
   set('cfg-github-token', 'github_token');
-  set('cfg-cf-token',     'cf_api_token');
-  set('cfg-cf-zone',      'cf_zone_id');
   try { state.sshHosts = c['ssh_hosts'] ? JSON.parse(c['ssh_hosts']) : {}; } catch(_) { state.sshHosts = {}; }
   renderSSHHosts();
 }
@@ -750,8 +748,6 @@ async function saveConfig() {
   const fields = [
     {id: 'cfg-repo-url',     key: 'repo_url'},
     {id: 'cfg-github-token', key: 'github_token'},
-    {id: 'cfg-cf-token',     key: 'cf_api_token'},
-    {id: 'cfg-cf-zone',      key: 'cf_zone_id'},
   ];
   for (const f of fields) {
     const el = document.getElementById(f.id);
