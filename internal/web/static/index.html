@@ -43,16 +43,7 @@
         <path d="M7 22 Q14 26 21 22" stroke="#f2f2f7" stroke-width="1.5" fill="none" stroke-linecap="round"/>
       </svg>
     </div>
-    <select id="project-select" class="header-project-select"></select>
-    <div class="status-pill">
-      <div id="status-dot" class="status-dot idle"></div>
-      <span id="status-text">idle</span>
-    </div>
-    <button id="stop-btn" class="stop-btn" style="display:none" title="stop task">
-      <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor">
-        <rect x="1" y="1" width="10" height="10" rx="2"/>
-      </svg>
-    </button>
+    <span class="header-title">kaptaan</span>
     <button id="settings-btn" class="icon-btn" title="project settings">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#8e8e93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3"/>
@@ -68,6 +59,20 @@
       </svg>
     </button>
   </header>
+
+  <!-- project + status sub-bar -->
+  <div class="project-bar">
+    <select id="project-select" class="project-select"></select>
+    <div class="status-pill">
+      <div id="status-dot" class="status-dot idle"></div>
+      <span id="status-text">idle</span>
+    </div>
+    <button id="stop-btn" class="stop-btn" style="display:none" title="stop task">
+      <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor">
+        <rect x="1" y="1" width="10" height="10" rx="2"/>
+      </svg>
+    </button>
+  </div>
 
   <div id="feed" class="feed"></div>
 

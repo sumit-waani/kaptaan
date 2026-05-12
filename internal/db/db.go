@@ -103,10 +103,10 @@ func (d *DB) migrate() error {
 // ─── Projects ────────────────────────────────────────────────────────────────
 
 type Project struct {
-        ID        int
-        Name      string
-        CreatedAt string
-        UpdatedAt string
+        ID        int    `json:"id"`
+        Name      string `json:"name"`
+        CreatedAt string `json:"created_at"`
+        UpdatedAt string `json:"updated_at"`
 }
 
 func (d *DB) EnsureDefaultProject(ctx context.Context) error {
