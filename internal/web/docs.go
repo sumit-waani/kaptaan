@@ -13,7 +13,7 @@ func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	switch r.Method {
 	case http.MethodGet:
-		ms, err := s.db.ListMemories(ctx, fixedProjectID)
+		ms, err := s.db.ListMemories(ctx, getProjectID(r))
 		if err != nil {
 			jsonErr(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -39,7 +39,7 @@ func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, "invalid JSON / missing key", http.StatusBadRequest)
 			return
 		}
-		if err := s.db.PutMemory(ctx, fixedProjectID, body.Key, body.Content); err != nil {
+		if err := s.db.PutMemory(ctx, getProjectID(r), body.Key, body.Content); err != nil {
 			jsonErr(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -51,7 +51,7 @@ func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, "key required", http.StatusBadRequest)
 			return
 		}
-		if err := s.db.DeleteMemory(ctx, fixedProjectID, key); err != nil {
+		if err := s.db.DeleteMemory(ctx, getProjectID(r), key); err != nil {
 			jsonErr(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

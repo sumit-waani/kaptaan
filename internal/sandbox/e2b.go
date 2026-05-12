@@ -287,6 +287,18 @@ func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
         return io.ReadAll(res.Body)
 }
 
+// NewHandle parses a "sandboxID:clientID" ref and returns a Sandbox handle
+// without making any API calls. Useful for Ping checks before calling Connect.
+func NewHandle(apiKey, ref string) *Sandbox {
+        parts := strings.SplitN(ref, ":", 2)
+        sandboxID := parts[0]
+        clientID := ""
+        if len(parts) == 2 {
+                clientID = parts[1]
+        }
+        return &Sandbox{apiKey: apiKey, ID: sandboxID, ClientID: clientID}
+}
+
 // Connect resumes a paused sandbox by ID and returns a usable handle.
 // ref is "sandboxID:clientID" as stored by the agent in DB.
 func Connect(ctx context.Context, apiKey, ref string) (*Sandbox, error) {

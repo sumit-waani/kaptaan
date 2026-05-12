@@ -19,10 +19,6 @@ import (
         "github.com/cto-agent/cto-agent/internal/tools"
 )
 
-// fixedProjectID is used as the key for memories, conversations, and sandbox
-// state. There is only one project now — config comes from env vars.
-const fixedProjectID = 1
-
 // Hooks are the small set of UI callbacks the agent invokes.
 type Hooks struct {
         Send           func(projectID int, text string)
@@ -34,7 +30,7 @@ type Hooks struct {
 }
 
 // projectSandbox is the live E2B sandbox, shared across all turns until
-// the agent explicitly calls reset_sandbox.
+// the agent signals task completion via reset_sandbox.
 type projectSandbox struct {
         runtime tools.Runtime
         branch  string
@@ -427,14 +423,38 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 delete(a.sandboxes, projectID)
         }
 
-        e2bKey := a.db.GetConfig(ctx, "e2b_api_key")
+        e2bKey := a.db.GetConfig(ctx, projectID, "e2b_api_key")
         if e2bKey == "" {
                 return nil, errors.New("e2b_api_key is not configured — set it in Settings → Configuration")
         }
 
         // Try to reconnect to a previously saved (paused) sandbox.
-        if savedID := a.db.GetConfig(ctx, "_sandbox_id"); savedID != "" {
-                a.hooks.Send(projectID, "🔄 reconnecting to saved sandbox…")
+        if savedID := a.db.GetConfig(ctx, projectID, "_sandbox_id"); savedID != "" {
+                // Ping first — if sandbox is still running, reuse it without
+                // calling /resume (which may fail on an already-live sandbox).
+                handle := sandbox.NewHandle(e2bKey, savedID)
+                if handle.ID != "" && handle.Ping(ctx) {
+                        runtime := &tools.SandboxRuntime{
+                                Sandbox: handle,
+                                Cwd:     "/home/user/workspace",
+                                Env: map[string]string{
+                                        "HOME": "/home/user",
+                                        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                                },
+                        }
+                        // Sync with latest from origin/main on every reconnect.
+                        if a.db.GetConfig(ctx, projectID, "github_token") != "" {
+                                if r := runtime.Shell(ctx, "cd /home/user/workspace && git fetch origin && git merge origin/main --no-edit", 60); r.IsErr {
+                                        log.Printf("[agent] git sync failed: %s", r.Output)
+                                }
+                        }
+                        a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
+                        a.hooks.Send(projectID, "✅ sandbox reconnected, branch: `kaptaan`")
+                        return runtime, nil
+                }
+
+                // Sandbox is paused or unreachable — resume it.
+                a.hooks.Send(projectID, "🔄 resuming paused sandbox…")
                 sb, err := sandbox.Connect(ctx, e2bKey, savedID)
                 if err == nil {
                         runtime := &tools.SandboxRuntime{
@@ -446,18 +466,18 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                                 },
                         }
                         // Sync with latest from origin/main on every reconnect.
-                        if a.db.GetConfig(ctx, "github_token") != "" {
+                        if a.db.GetConfig(ctx, projectID, "github_token") != "" {
                                 if r := runtime.Shell(ctx, "cd /home/user/workspace && git fetch origin && git merge origin/main --no-edit", 60); r.IsErr {
                                         log.Printf("[agent] git sync failed: %s", r.Output)
                                 }
                         }
                         a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
-                        a.hooks.Send(projectID, "✅ sandbox reconnected, branch: `kaptaan`")
+                        a.hooks.Send(projectID, "✅ sandbox resumed, branch: `kaptaan`")
                         return runtime, nil
                 }
                 // Saved ID is stale — fall through to create a fresh sandbox.
-                log.Printf("[agent] sandbox reconnect failed (%v) — creating new one", err)
-                _ = a.db.SetConfig(ctx, "_sandbox_id", "")
+                log.Printf("[agent] sandbox resume failed (%v) — creating new one", err)
+                _ = a.db.SetConfig(ctx, projectID, "_sandbox_id", "")
         }
 
         a.hooks.Send(projectID, "🛠 spinning up sandbox…")
@@ -469,7 +489,7 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
         // Persist sandbox reference for future reconnects (stored in config, not
         // memories, so the agent cannot accidentally delete it).
         sandboxRef := sb.ID + ":" + sb.ClientID
-        if err := a.db.SetConfig(ctx, "_sandbox_id", sandboxRef); err != nil {
+        if err := a.db.SetConfig(ctx, projectID, "_sandbox_id", sandboxRef); err != nil {
                 log.Printf("[agent] failed to store sandbox id: %v", err)
         }
 
@@ -486,8 +506,8 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 log.Printf("[agent] mkdir workspace: %s", r.Output)
         }
 
-        repoURL := normalizeRepoURL(a.db.GetConfig(ctx, "repo_url"))
-        githubToken := a.db.GetConfig(ctx, "github_token")
+        repoURL := normalizeRepoURL(a.db.GetConfig(ctx, projectID, "repo_url"))
+        githubToken := a.db.GetConfig(ctx, projectID, "github_token")
 
         if repoURL != "" && githubToken != "" {
                 cloneURL := injectToken(repoURL, githubToken)
@@ -527,20 +547,25 @@ func (a *Agent) ReadScratchpad(ctx context.Context, projectID int) (string, erro
         }
 
         // No in-memory sandbox — try to reconnect to a paused one from DB.
-        e2bKey := a.db.GetConfig(ctx, "e2b_api_key")
+        e2bKey := a.db.GetConfig(ctx, projectID, "e2b_api_key")
         if e2bKey == "" {
                 return "", fmt.Errorf("no active sandbox")
         }
-        savedID := a.db.GetConfig(ctx, "_sandbox_id")
+        savedID := a.db.GetConfig(ctx, projectID, "_sandbox_id")
         if savedID == "" {
                 return "", fmt.Errorf("no active sandbox — send a task first")
         }
-        sb, err := sandbox.Connect(ctx, e2bKey, savedID)
-        if err != nil {
-                return "", fmt.Errorf("sandbox unavailable: %w", err)
+        // Ping first — if still running, reuse without /resume.
+        handle := sandbox.NewHandle(e2bKey, savedID)
+        if handle.ID == "" || !handle.Ping(ctx) {
+                var err error
+                handle, err = sandbox.Connect(ctx, e2bKey, savedID)
+                if err != nil {
+                        return "", fmt.Errorf("sandbox unavailable: %w", err)
+                }
         }
         rt := &tools.SandboxRuntime{
-                Sandbox: sb,
+                Sandbox: handle,
                 Cwd:     "/home/user/workspace",
                 Env: map[string]string{
                         "HOME": "/home/user",
@@ -557,84 +582,39 @@ func (a *Agent) ReadScratchpad(ctx context.Context, projectID int) (string, erro
         return r.Output, nil
 }
 
-func (a *Agent) resetSandbox(ctx context.Context, projectID int) {
+// pauseSandbox removes the in-memory sandbox reference so the next task
+// reconnects to the paused E2B instance. The sandbox itself is NOT killed —
+// it stays alive (or auto-pauses on timeout) and is resumed by ensureSandbox.
+// The _sandbox_id in DB is preserved so reconnect works.
+func (a *Agent) pauseSandbox(ctx context.Context, projectID int) {
         a.sbMu.Lock()
         ps := a.sandboxes[projectID]
         delete(a.sandboxes, projectID)
         a.sbMu.Unlock()
-        if ps != nil {
-                _ = ps.runtime.Close(ctx)
-        }
-        // Clear saved sandbox ID so next ensureSandbox creates a fresh one.
-        _ = a.db.SetConfig(ctx, "_sandbox_id", "")
+        // ps.runtime.Close() is intentionally NOT called — we keep the E2B
+        // sandbox alive so it can be resumed on the next task.
+        _ = ps
 }
 
-// systemPrompt is rebuilt each turn so config and memory changes are current.
+// systemPrompt is built from the DB. There is no hardcoded fallback.
+// Seed the system_prompt config via Settings → Configuration.
 func (t *turn) systemPrompt() string {
-        ctx := context.Background()
-        mems, _ := t.a.db.ListMemories(ctx, t.projectID)
+	ctx := context.Background()
+	mems, _ := t.a.db.ListMemories(ctx, t.projectID)
 
-        // If the user has set a custom system prompt, use it and append memories.
-        if custom := t.a.db.GetConfig(ctx, "system_prompt"); custom != "" {
-                var b strings.Builder
-                b.WriteString(custom)
-                if len(mems) > 0 {
-                        b.WriteString("\n\n## Stored memories\n")
-                        for _, m := range mems {
-                                fmt.Fprintf(&b, "- `%s` — %s\n", m.Key, truncate(m.Content, 120))
-                        }
-                }
-                return b.String()
-        }
-
-        repoURL := normalizeRepoURL(t.a.db.GetConfig(ctx, "repo_url"))
-        githubToken := t.a.db.GetConfig(ctx, "github_token")
-
-        var b strings.Builder
-        b.WriteString("You are **Kaptaan**, an autonomous coding agent.\n\n")
-
-        b.WriteString("## Active project\n")
-        if repoURL != "" {
-                fmt.Fprintf(&b, "- repo: %s\n", repoURL)
-        } else {
-                b.WriteString("- repo: (none — set repo_url in Settings → Configuration)\n")
-        }
-        if githubToken == "" {
-                b.WriteString("- github_token: (missing — set in Settings → Configuration — PR ops disabled)\n")
-        }
-        b.WriteString("- workdir in sandbox: /home/user/workspace\n\n")
-
-        b.WriteString("## How you work\n")
-        b.WriteString("When given a task:\n")
-        b.WriteString("1. Write a simple todo list to scratchpad.md using `write_scratchpad`\n")
-        b.WriteString("2. Execute todos one by one\n")
-        b.WriteString("3. Check off each completed item in scratchpad using `write_scratchpad`\n")
-        b.WriteString("4. After all todos are done: verify output against the original instructions\n")
-        b.WriteString("5. Push branch with `shell` (`git push -u origin kaptaan`), call `reset_sandbox` to clean up\n")
-        b.WriteString("6. Write a short summary to the user with `send`\n\n")
-        b.WriteString("- Do NOT create plan files. Use scratchpad.md as your working memory.\n")
-        b.WriteString("- For docs in the repo: use `read_file` and `grep_repo` directly on the /docs folder.\n")
-        b.WriteString("- Use `send` to give progress updates. Use `ask` ONLY when genuinely blocked.\n")
-        b.WriteString("- Use `write_memory` to persist long-lived facts (architecture decisions, conventions).\n")
-        b.WriteString("- When multiple independent operations are needed (e.g. reading several files), call all tools in one turn.\n\n")
-
-        b.WriteString("## Sandbox & git workflow\n")
-        b.WriteString("- The sandbox persists across turns (and across server restarts via pause/resume).\n")
-        b.WriteString("- Call `reset_sandbox` only when a task is fully done — it kills the sandbox.\n")
-        b.WriteString("- The working branch is always `kaptaan` (fixed — do not create other branches).\n")
-        b.WriteString("- Commit frequently with `git_commit` after each meaningful chunk of work.\n")
-        b.WriteString("- To publish work: use `shell` to run `git push -u origin kaptaan`.\n\n")
-
-        if len(mems) > 0 {
-                b.WriteString("## Stored memories\n")
-                for _, m := range mems {
-                        fmt.Fprintf(&b, "- `%s` — %s\n", m.Key, truncate(m.Content, 120))
-                }
-                b.WriteString("\n")
-        }
-        return b.String()
+	if custom := t.a.db.GetConfig(ctx, t.projectID, "system_prompt"); custom != "" {
+		var b strings.Builder
+		b.WriteString(custom)
+		if len(mems) > 0 {
+			b.WriteString("\n\n## Stored memories\n")
+			for _, m := range mems {
+				fmt.Fprintf(&b, "- `%s` — %s\n", m.Key, truncate(m.Content, 120))
+			}
+		}
+		return b.String()
+	}
+	return "You are Kaptaan. No system_prompt configured — owner must set it in Settings → Configuration.\n"
 }
-
 // dispatch executes one tool call and returns the textual result.
 func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
         name := call.Function.Name
@@ -800,11 +780,138 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 return r.Output
 
         case "reset_sandbox":
-                t.a.resetSandbox(ctx, t.projectID)
-                return "sandbox reset"
+			t.a.pauseSandbox(ctx, t.projectID)
+			return "sandbox paused"
+	// ── SSH tools ──
+	case "ssh_exec":
+		host := getStr(args, "host")
+		cmd := getStr(args, "cmd")
+		timeout := getInt(args, "timeout_secs", 30)
+		if host == "" || cmd == "" {
+			return "ERROR: ssh_exec requires `host` and `cmd`"
+		}
+		return t.sshExec(ctx, host, cmd, timeout)
 
-        default:
-                return fmt.Sprintf("ERROR: unknown tool %q", name)
+	case "ssh_upload":
+		host := getStr(args, "host")
+		content := getStr(args, "local_content")
+		remote := getStr(args, "remote_path")
+		if host == "" || content == "" || remote == "" {
+			return "ERROR: ssh_upload requires `host`, `local_content`, and `remote_path`"
+		}
+		return t.sshUpload(ctx, host, content, remote)
+
+	case "ssh_read":
+		host := getStr(args, "host")
+		remote := getStr(args, "remote_path")
+		if host == "" || remote == "" {
+			return "ERROR: ssh_read requires `host` and `remote_path`"
+		}
+		return t.sshRead(ctx, host, remote)
+
+	// ── GitHub tools ──
+	case "gh_list_issues":
+		state := getStr(args, "state")
+		return t.ghListIssues(ctx, state)
+
+	case "gh_create_issue":
+		title := getStr(args, "title")
+		body := getStr(args, "body")
+		if title == "" {
+			return "ERROR: gh_create_issue requires `title`"
+		}
+		return t.ghCreateIssue(ctx, title, body)
+
+	case "gh_close_issue":
+		num := getInt(args, "number", 0)
+		if num <= 0 {
+			return "ERROR: gh_close_issue requires `number`"
+		}
+		return t.ghCloseIssue(ctx, num)
+
+	case "gh_list_workflows":
+		return t.ghListWorkflows(ctx)
+
+	case "gh_trigger_workflow":
+		wfID := getStr(args, "workflow_id")
+		ref := getStr(args, "ref")
+		if wfID == "" {
+			return "ERROR: gh_trigger_workflow requires `workflow_id`"
+		}
+		return t.ghTriggerWorkflow(ctx, wfID, ref)
+
+	case "gh_get_workflow_run":
+		runID := getInt(args, "run_id", 0)
+		if runID <= 0 {
+			return "ERROR: gh_get_workflow_run requires `run_id`"
+		}
+		return t.ghGetWorkflowRun(ctx, runID)
+
+	case "gh_list_branches":
+		return t.ghListBranches(ctx)
+
+	case "gh_delete_branch":
+		branch := getStr(args, "branch")
+		if branch == "" {
+			return "ERROR: gh_delete_branch requires `branch`"
+		}
+		return t.ghDeleteBranch(ctx, branch)
+
+	case "gh_get_file":
+		path := getStr(args, "path")
+		ref := getStr(args, "ref")
+		if path == "" {
+			return "ERROR: gh_get_file requires `path`"
+		}
+		return t.ghGetFile(ctx, path, ref)
+
+	// ── Cloudflare tools ──
+	case "cf_list_dns_records":
+		recType := getStr(args, "type")
+		return t.cfListDNS(ctx, recType)
+
+	case "cf_create_dns":
+		recType := getStr(args, "type")
+		name := getStr(args, "name")
+		content := getStr(args, "content")
+		ttl := getInt(args, "ttl", 1)
+		proxied := getBool(args, "proxied", false)
+		if recType == "" || name == "" || content == "" {
+			return "ERROR: cf_create_dns requires `type`, `name`, and `content`"
+		}
+		return t.cfCreateDNS(ctx, recType, name, content, ttl, proxied)
+
+	case "cf_update_dns":
+		recID := getStr(args, "record_id")
+		recType := getStr(args, "type")
+		name := getStr(args, "name")
+		content := getStr(args, "content")
+		proxied := getBool(args, "proxied", false)
+		if recID == "" || recType == "" || name == "" || content == "" {
+			return "ERROR: cf_update_dns requires `record_id`, `type`, `name`, and `content`"
+		}
+		return t.cfUpdateDNS(ctx, recID, recType, name, content, proxied)
+
+	case "cf_delete_dns":
+		recID := getStr(args, "record_id")
+		if recID == "" {
+			return "ERROR: cf_delete_dns requires `record_id`"
+		}
+		return t.cfDeleteDNS(ctx, recID)
+
+	case "cf_purge_cache":
+		files := getStr(args, "files")
+		if files == "" {
+			return "ERROR: cf_purge_cache requires `files`"
+		}
+		return t.cfPurgeCache(ctx, files)
+
+	case "cf_get_analytics":
+		sinceHours := getInt(args, "since_hours", 24)
+		return t.cfGetAnalytics(ctx, sinceHours)
+
+	default:
+		return fmt.Sprintf("ERROR: unknown tool %q", name)
         }
 }
 
@@ -823,6 +930,14 @@ func getInt(args map[string]interface{}, key string, def int) int {
                 return v
         }
         return def
+}
+
+func getBool(args map[string]interface{}, key string, def bool) bool {
+	switch v := args[key].(type) {
+	case bool:
+		return v
+	}
+	return def
 }
 
 func summariseArgs(args map[string]interface{}) string {

@@ -13,6 +13,7 @@ const state = {
   messages: [],
   toolGroupsOpen: {},
   sse: null,
+  projectId: 1,
 };
 
 // ─── Boot ────────────────────────────────────────────────────────────────────
@@ -36,6 +37,7 @@ async function init() {
 
   if (state.loggedIn) {
     await loadHistory();
+    await loadProjects();
     showView('app');
     connect();
   } else {
@@ -566,6 +568,53 @@ async function doSend() {
   }
 }
 
+// ─── Projects ───────────────────────────────────────────────────────────────
+
+async function loadProjects() {
+  const j = await apiCall('/api/projects');
+  const projects = (j && j.projects) || [];
+  const sel = document.getElementById('project-select');
+  if (!sel) return;
+
+  sel.innerHTML = '';
+  for (const p of projects) {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = p.name;
+    if (p.id === state.projectId) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function onProjectChange() {
+  const sel = document.getElementById('project-select');
+  if (!sel) return;
+  const newId = parseInt(sel.value, 10);
+  if (newId && newId !== state.projectId) {
+    state.projectId = newId;
+    state.messages = [];
+    renderFeed();
+    loadHistory();
+  }
+}
+
+async function onCreateProject() {
+  const name = prompt('New project name:');
+  if (!name || !name.trim()) return;
+  const r = await apiCall('/api/projects/create', {
+    method: 'POST',
+    body: JSON.stringify({name: name.trim()}),
+  });
+  if (r && r.id) {
+    await loadProjects();
+    const sel = document.getElementById('project-select');
+    if (sel) {
+      sel.value = r.id;
+      onProjectChange();
+    }
+  }
+}
+
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
 function openSettings() {
@@ -707,6 +756,9 @@ async function loadConfig() {
   setVal('cfg-repo-url',        'repo_url');
   setVal('cfg-github-token',    'github_token');
   setVal('cfg-system-prompt',   'system_prompt');
+  setVal('cfg-cf-token',     'cf_api_token');
+  setVal('cfg-cf-zone',      'cf_zone_id');
+  setVal('cfg-ssh-hosts',    'ssh_hosts');
 }
 
 async function saveConfig() {
@@ -722,6 +774,9 @@ async function saveConfig() {
     {id: 'cfg-repo-url',       key: 'repo_url'},
     {id: 'cfg-github-token',   key: 'github_token'},
     {id: 'cfg-system-prompt',  key: 'system_prompt'},
+    {id: 'cfg-cf-token',    key: 'cf_api_token'},
+    {id: 'cfg-cf-zone',     key: 'cf_zone_id'},
+    {id: 'cfg-ssh-hosts',   key: 'ssh_hosts'},
   ];
 
   for (const f of fields) {
@@ -763,8 +818,10 @@ function scrollFeed() {
 }
 
 function apiCall(path, opts = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const url = path + sep + 'project_id=' + state.projectId;
   const headers = Object.assign({'Content-Type': 'application/json'}, opts.headers || {});
-  return fetch(path, Object.assign({}, opts, {headers})).then(r => {
+  return fetch(url, Object.assign({}, opts, {headers})).then(r => {
     if (r.status === 401) {
       state.loggedIn = false;
       if (state.sse) { state.sse.close(); state.sse = null; }
@@ -788,6 +845,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // Main app
   document.getElementById('stop-btn').addEventListener('click', cancelTask);
   document.getElementById('settings-btn').addEventListener('click', openSettings);
+
+  // Project selector
+  const projectSel = document.getElementById('project-select');
+  if (projectSel) {
+    projectSel.addEventListener('change', onProjectChange);
+  }
+  const projectNewBtn = document.getElementById('project-new-btn');
+  if (projectNewBtn) {
+    projectNewBtn.addEventListener('click', onCreateProject);
+  }
 
   const composerInput = document.getElementById('composer-input');
   const sendBtn       = document.getElementById('send-btn');
