@@ -56,6 +56,7 @@ func Create(ctx context.Context, apiKey, template string, timeoutSecs int) (*San
                 "templateID": template,
                 "timeout":    timeoutSecs,
                 "lifecycle":  map[string]any{"onTimeout": "pause"},
+                "memoryMB":   1024,
         })
         req, _ := http.NewRequestWithContext(ctx, http.MethodPost, apiBase+"/sandboxes", bytes.NewReader(body))
         req.Header.Set("X-API-Key", apiKey)
