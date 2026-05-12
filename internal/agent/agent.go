@@ -701,7 +701,13 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
 
         case "delete_memory":
                 key := getStr(args, "key")
+                if key == "" {
+                        return "ERROR: delete_memory requires `key`"
+                }
                 if err := t.a.db.DeleteMemory(ctx, t.projectID, key); err != nil {
+                        if errors.Is(err, db.ErrNotFound) {
+                                return "ERROR: memory key " + key + " not found"
+                        }
                         return "ERROR: " + err.Error()
                 }
                 return "deleted memory " + key

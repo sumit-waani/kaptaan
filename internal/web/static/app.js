@@ -817,9 +817,16 @@ function renderSSHHosts() {
   }
 }
 
-function deleteSSHHost(name) {
+async function deleteSSHHost(name) {
   delete state.sshHosts[name];
   renderSSHHosts();
+  const err = await saveSSHHosts();
+  const errEl = document.getElementById('cfg-error');
+  if (err) {
+    if (errEl) { errEl.textContent = err; errEl.style.display = ''; }
+  } else {
+    if (errEl) errEl.style.display = 'none';
+  }
 }
 
 async function addSSHHost() {
@@ -846,6 +853,18 @@ async function addSSHHost() {
   if (fileEl) fileEl.value = '';
   const label = document.getElementById('ssh-key-file-name');
   if (label) label.textContent = 'upload key file';
+
+  const addBtn = document.getElementById('ssh-add-btn');
+  const errEl  = document.getElementById('cfg-error');
+  if (addBtn) { addBtn.disabled = true; addBtn.textContent = 'saving…'; }
+  if (errEl)  errEl.style.display = 'none';
+  const err = await saveSSHHosts();
+  if (addBtn) { addBtn.disabled = false; addBtn.textContent = err ? 'add host' : '✓ saved'; }
+  if (err) {
+    if (errEl) { errEl.textContent = err; errEl.style.display = ''; }
+  } else {
+    setTimeout(() => { if (addBtn) addBtn.textContent = 'add host'; }, 2000);
+  }
 }
 
 async function saveSSHHosts() {

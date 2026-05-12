@@ -91,19 +91,19 @@ var allTools = []llm.Tool{
         // ── SSH tools ──
         mkTool("ssh_exec", "Execute a command on a remote host via SSH. Host keys/tokens are read from DB (never visible to LLM).",
                 obj(map[string]interface{}{
-                        "host":         sprop("logical host name as configured in ssh_hosts config (e.g. 'prod')"),
+                        "host":         sprop("logical host name exactly as configured in ssh_hosts (use list_memories or ask the user if unsure)"),
                         "cmd":          sprop("shell command to run"),
                         "timeout_secs": iprop("timeout in seconds (default 30)"),
                 }, "host", "cmd")),
         mkTool("ssh_upload", "Upload/write content to a file on a remote host via SSH.",
                 obj(map[string]interface{}{
-                        "host":          sprop("logical host name as configured in ssh_hosts config (e.g. 'prod')"),
+                        "host":          sprop("logical host name exactly as configured in ssh_hosts (use list_memories or ask the user if unsure)"),
                         "local_content": sprop("content to write to the remote file"),
                         "remote_path":   sprop("absolute path on the remote host"),
                 }, "host", "local_content", "remote_path")),
         mkTool("ssh_read", "Read a file from a remote host via SSH.",
                 obj(map[string]interface{}{
-                        "host":        sprop("logical host name as configured in ssh_hosts config (e.g. 'prod')"),
+                        "host":        sprop("logical host name exactly as configured in ssh_hosts (use list_memories or ask the user if unsure)"),
                         "remote_path": sprop("absolute path on the remote host"),
                 }, "host", "remote_path")),
 

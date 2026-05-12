@@ -73,9 +73,19 @@ func (d *DB) ListMemories(ctx context.Context, projectID int) ([]Memory, error) 
 }
 
 func (d *DB) DeleteMemory(ctx context.Context, projectID int, key string) error {
-        _, err := d.db.ExecContext(ctx,
+        res, err := d.db.ExecContext(ctx,
                 "DELETE FROM memories WHERE project_id=? AND key=?", projectID, key)
-        return err
+        if err != nil {
+                return err
+        }
+        n, err := res.RowsAffected()
+        if err != nil {
+                return err
+        }
+        if n == 0 {
+                return ErrNotFound
+        }
+        return nil
 }
 
 // GetProjectScratchpad returns the stored scratchpad for a project.
