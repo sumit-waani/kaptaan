@@ -34,7 +34,7 @@ type Hooks struct {
 }
 
 // projectSandbox is the live E2B sandbox, shared across all turns until
-// the agent explicitly calls reset_sandbox.
+// the agent signals task completion via reset_sandbox.
 type projectSandbox struct {
         runtime tools.Runtime
         branch  string
@@ -557,93 +557,39 @@ func (a *Agent) ReadScratchpad(ctx context.Context, projectID int) (string, erro
         return r.Output, nil
 }
 
-func (a *Agent) resetSandbox(ctx context.Context, projectID int) {
+// pauseSandbox removes the in-memory sandbox reference so the next task
+// reconnects to the paused E2B instance. The sandbox itself is NOT killed —
+// it stays alive (or auto-pauses on timeout) and is resumed by ensureSandbox.
+// The _sandbox_id in DB is preserved so reconnect works.
+func (a *Agent) pauseSandbox(ctx context.Context, projectID int) {
         a.sbMu.Lock()
         ps := a.sandboxes[projectID]
         delete(a.sandboxes, projectID)
         a.sbMu.Unlock()
-        if ps != nil {
-                _ = ps.runtime.Close(ctx)
-        }
-        // Clear saved sandbox ID so next ensureSandbox creates a fresh one.
-        _ = a.db.SetConfig(ctx, "_sandbox_id", "")
+        // ps.runtime.Close() is intentionally NOT called — we keep the E2B
+        // sandbox alive so it can be resumed on the next task.
+        _ = ps
 }
 
-// systemPrompt is rebuilt each turn so config and memory changes are current.
+// systemPrompt is built from the DB. There is no hardcoded fallback.
+// Seed the system_prompt config via Settings → Configuration.
 func (t *turn) systemPrompt() string {
-        ctx := context.Background()
-        mems, _ := t.a.db.ListMemories(ctx, t.projectID)
+	ctx := context.Background()
+	mems, _ := t.a.db.ListMemories(ctx, t.projectID)
 
-        // If the user has set a custom system prompt, use it and append memories.
-        if custom := t.a.db.GetConfig(ctx, "system_prompt"); custom != "" {
-                var b strings.Builder
-                b.WriteString(custom)
-                if len(mems) > 0 {
-                        b.WriteString("\n\n## Stored memories\n")
-                        for _, m := range mems {
-                                fmt.Fprintf(&b, "- `%s` — %s\n", m.Key, truncate(m.Content, 120))
-                        }
-                }
-                return b.String()
-        }
-
-        repoURL := normalizeRepoURL(t.a.db.GetConfig(ctx, "repo_url"))
-        githubToken := t.a.db.GetConfig(ctx, "github_token")
-
-        var b strings.Builder
-        b.WriteString("You are **Kaptaan**, an autonomous coding agent.\n\n")
-
-        b.WriteString("## Active project\n")
-        if repoURL != "" {
-                fmt.Fprintf(&b, "- repo: %s\n", repoURL)
-        } else {
-                b.WriteString("- repo: (none — set repo_url in Settings → Configuration)\n")
-        }
-        if githubToken == "" {
-                b.WriteString("- github_token: (missing — set in Settings → Configuration — PR ops disabled)\n")
-        }
-        b.WriteString("- workdir in sandbox: /home/user/workspace\n\n")
-
-        b.WriteString("## How you work\n")
-        b.WriteString("When given a task:\n")
-        b.WriteString("1. Write a simple todo list to scratchpad.md using `write_scratchpad`\n")
-        b.WriteString("2. Execute todos one by one\n")
-        b.WriteString("3. Check off each completed item in scratchpad using `write_scratchpad`\n")
-        b.WriteString("4. After all todos are done: verify output against the original instructions\n")
-        b.WriteString("5. Push branch with `shell` (`git push -u origin kaptaan`), call `reset_sandbox` to clean up\n")
-        b.WriteString("6. Write a short summary to the user with `send`\n\n")
-        b.WriteString("- Do NOT create plan files. Use scratchpad.md as your working memory.\n")
-        b.WriteString("- For docs in the repo: use `read_file` and `grep_repo` directly on the /docs folder.\n")
-        b.WriteString("- Use `send` to give progress updates. Use `ask` ONLY when genuinely blocked.\n")
-        b.WriteString("- Use `write_memory` to persist long-lived facts (architecture decisions, conventions).\n")
-        b.WriteString("- When multiple independent operations are needed (e.g. reading several files), call all tools in one turn.\n\n")
-
-        b.WriteString("## Sandbox & git workflow\n")
-        b.WriteString("- The sandbox persists across turns (and across server restarts via pause/resume).\n")
-        b.WriteString("- Call `reset_sandbox` only when a task is fully done — it kills the sandbox.\n")
-        b.WriteString("- The working branch is always `kaptaan` (fixed — do not create other branches).\n")
-        b.WriteString("- Commit frequently with `git_commit` after each meaningful chunk of work.\n")
-        b.WriteString("- To publish work: use `shell` to run `git push -u origin kaptaan`.\n\n")
-
-	b.WriteString("## SSH, GitHub, and Cloudflare tools\n")
-	b.WriteString("- `ssh_exec(host, cmd)` — run commands on configured hosts (keys in Settings)\n")
-	b.WriteString("- `ssh_upload(host, content, path)` / `ssh_read(host, path)` — file transfer\n")
-	b.WriteString("- `gh_list_issues(state)` / `gh_create_issue(title, body)` / `gh_close_issue(number)`\n")
-	b.WriteString("- `gh_list_workflows` / `gh_trigger_workflow(id, ref)` / `gh_get_workflow_run(run_id)`\n")
-	b.WriteString("- `gh_list_branches` / `gh_delete_branch(branch)` / `gh_get_file(path, ref)`\n")
-	b.WriteString("- `cf_list_dns_records(type)` / `cf_create_dns(...)` / `cf_update_dns(...)` / `cf_delete_dns(id)`\n")
-	b.WriteString("- `cf_purge_cache(files)` / `cf_get_analytics(since_hours)`\n")
-	b.WriteString("- All credentials stay server-side — the LLM only sees logical names like host=\"prod\".\n\n")
-        if len(mems) > 0 {
-                b.WriteString("## Stored memories\n")
-                for _, m := range mems {
-                        fmt.Fprintf(&b, "- `%s` — %s\n", m.Key, truncate(m.Content, 120))
-                }
-                b.WriteString("\n")
-        }
-        return b.String()
+	if custom := t.a.db.GetConfig(ctx, "system_prompt"); custom != "" {
+		var b strings.Builder
+		b.WriteString(custom)
+		if len(mems) > 0 {
+			b.WriteString("\n\n## Stored memories\n")
+			for _, m := range mems {
+				fmt.Fprintf(&b, "- `%s` — %s\n", m.Key, truncate(m.Content, 120))
+			}
+		}
+		return b.String()
+	}
+	return "You are Kaptaan. No system_prompt configured — owner must set it in Settings → Configuration.\n"
 }
-
 // dispatch executes one tool call and returns the textual result.
 func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
         name := call.Function.Name
@@ -809,8 +755,8 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 return r.Output
 
         case "reset_sandbox":
-		return "sandbox reset"
-
+			t.a.pauseSandbox(ctx, t.projectID)
+			return "sandbox paused"
 	// ── SSH tools ──
 	case "ssh_exec":
 		host := getStr(args, "host")

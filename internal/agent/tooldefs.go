@@ -85,7 +85,7 @@ var allTools = []llm.Tool{
                 obj(map[string]interface{}{
                         "message": sprop("commit message"),
                 }, "message")),
-        mkTool("reset_sandbox", "Close the current sandbox and wipe its state. Call this after completing a task.",
+        mkTool("reset_sandbox", "Pause the sandbox. Call after completing a task. The sandbox state (repo, branch, files) is preserved for the next task.",
                 obj(map[string]interface{}{})),
 
         // ── SSH tools ──
