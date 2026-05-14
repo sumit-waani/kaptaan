@@ -15,7 +15,7 @@ const state = {
   sse: null,
   projectId: 1,
   projects: [],
-  sshHosts: {},
+
 };
 
 // ─── Boot ────────────────────────────────────────────────────────────────────
@@ -735,8 +735,6 @@ async function loadConfig() {
   const set = (id, key) => { const el = document.getElementById(id); if (el && c[key] !== undefined) el.value = c[key]; };
   set('cfg-repo-url',     'repo_url');
   set('cfg-github-token', 'github_token');
-  try { state.sshHosts = c['ssh_hosts'] ? JSON.parse(c['ssh_hosts']) : {}; } catch(_) { state.sshHosts = {}; }
-  renderSSHHosts();
 }
 
 async function saveConfig() {
@@ -759,115 +757,11 @@ async function saveConfig() {
       return;
     }
   }
-  const sshErr = await saveSSHHosts();
-  if (sshErr) {
-    if (err) { err.textContent = sshErr; err.style.display = ''; }
-    if (btn) { btn.disabled = false; btn.textContent = 'save configuration'; }
-    return;
-  }
   if (btn) {
     btn.disabled    = false;
     btn.textContent = '✓ saved';
     setTimeout(() => { btn.textContent = 'save configuration'; }, 2000);
   }
-}
-
-// ─── SSH hosts manager ────────────────────────────────────────────────────────
-
-function renderSSHHosts() {
-  const list = document.getElementById('ssh-hosts-list');
-  if (!list) return;
-  const names = Object.keys(state.sshHosts);
-  if (names.length === 0) {
-    list.innerHTML = '<div class="empty-list">no hosts configured</div>';
-    return;
-  }
-  list.innerHTML = '';
-  for (const name of names) {
-    const cfg  = state.sshHosts[name];
-    const item = document.createElement('div');
-    item.className = 'ssh-host-item';
-
-    const info = document.createElement('div');
-    info.className = 'ssh-host-info';
-
-    const nameEl = document.createElement('span');
-    nameEl.className   = 'ssh-host-name';
-    nameEl.textContent = name;
-
-    const detail = document.createElement('span');
-    detail.className   = 'ssh-host-detail';
-    detail.textContent = cfg.user + '@' + cfg.host;
-
-    info.appendChild(nameEl);
-    info.appendChild(detail);
-
-    const delBtn = document.createElement('button');
-    delBtn.className   = 'proj-action-btn danger';
-    delBtn.textContent = 'remove';
-    delBtn.addEventListener('click', () => deleteSSHHost(name));
-
-    item.appendChild(info);
-    item.appendChild(delBtn);
-    list.appendChild(item);
-  }
-}
-
-async function deleteSSHHost(name) {
-  delete state.sshHosts[name];
-  renderSSHHosts();
-  const err = await saveSSHHosts();
-  const errEl = document.getElementById('cfg-error');
-  if (err) {
-    if (errEl) { errEl.textContent = err; errEl.style.display = ''; }
-  } else {
-    if (errEl) errEl.style.display = 'none';
-  }
-}
-
-async function addSSHHost() {
-  const nameEl = document.getElementById('ssh-new-name');
-  const hostEl = document.getElementById('ssh-new-host');
-  const userEl = document.getElementById('ssh-new-user');
-  const fileEl = document.getElementById('ssh-new-key-file');
-
-  const name = nameEl ? nameEl.value.trim() : '';
-  const host = hostEl ? hostEl.value.trim() : '';
-  const user = userEl ? userEl.value.trim() : '';
-
-  if (!name || !host || !user) { alert('name, host, and username are required'); return; }
-  if (!fileEl || !fileEl.files || !fileEl.files[0]) { alert('please upload a private key file'); return; }
-
-  const key = await fileEl.files[0].text();
-
-  state.sshHosts[name] = {host, user, key};
-  renderSSHHosts();
-
-  if (nameEl) nameEl.value = '';
-  if (hostEl) hostEl.value = '';
-  if (userEl) userEl.value = '';
-  if (fileEl) fileEl.value = '';
-  const label = document.getElementById('ssh-key-file-name');
-  if (label) label.textContent = 'upload key file';
-
-  const addBtn = document.getElementById('ssh-add-btn');
-  const errEl  = document.getElementById('cfg-error');
-  if (addBtn) { addBtn.disabled = true; addBtn.textContent = 'saving…'; }
-  if (errEl)  errEl.style.display = 'none';
-  const err = await saveSSHHosts();
-  if (addBtn) { addBtn.disabled = false; addBtn.textContent = err ? 'add host' : '✓ saved'; }
-  if (err) {
-    if (errEl) { errEl.textContent = err; errEl.style.display = ''; }
-  } else {
-    setTimeout(() => { if (addBtn) addBtn.textContent = 'add host'; }, 2000);
-  }
-}
-
-async function saveSSHHosts() {
-  const value = JSON.stringify(state.sshHosts);
-  const r = await apiCall('/api/config', {method: 'POST', body: JSON.stringify({key: 'ssh_hosts', value})});
-  if (r && r.error) return r.error;
-  return null;
 }
 
 async function loadMemories() {
@@ -1064,16 +958,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('check-credits-btn').addEventListener('click', checkCredits);
   document.getElementById('refresh-scratchpad-btn').addEventListener('click', loadScratchpad);
   document.getElementById('cfg-save-btn').addEventListener('click', saveConfig);
-
-  // SSH hosts
-  document.getElementById('ssh-add-btn').addEventListener('click', addSSHHost);
-  const keyFileEl = document.getElementById('ssh-new-key-file');
-  if (keyFileEl) {
-    keyFileEl.addEventListener('change', () => {
-      const label = document.getElementById('ssh-key-file-name');
-      if (label) label.textContent = keyFileEl.files[0] ? keyFileEl.files[0].name : 'upload key file';
-    });
-  }
 
   // cfg-show-btn toggles
   document.querySelectorAll('.cfg-show-btn').forEach(btn => {

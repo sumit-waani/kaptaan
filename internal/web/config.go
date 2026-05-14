@@ -16,7 +16,6 @@ var globalConfigKeys = []string{
 var projectConfigKeys = []string{
         "repo_url",
         "github_token",
-        "ssh_hosts",
 }
 
 // GET  /api/global-config        → {config: {key: value, ...}}
