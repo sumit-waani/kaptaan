@@ -53,8 +53,9 @@ type Agent struct {
         cancels map[int]context.CancelFunc
         queue   chan queuedMsg // depth-1 queue for messages arriving while busy
 
-        sbMu      sync.Mutex
-        sandboxes map[int]*projectSandbox
+        sbMu      sync.Mutex              // guards sandboxes map and sbLocks map only
+        sbLocks   map[int]*sync.Mutex     // per-project lock for ensureSandbox
+        sandboxes map[int]*projectSandbox // per-project live workspace handle
 }
 
 func New(database *db.DB, pool *llm.Pool, hooks Hooks) *Agent {
@@ -65,6 +66,7 @@ func New(database *db.DB, pool *llm.Pool, hooks Hooks) *Agent {
                 running:   make(map[int]bool),
                 cancels:   make(map[int]context.CancelFunc),
                 queue:     make(chan queuedMsg, 1),
+                sbLocks:   make(map[int]*sync.Mutex),
                 sandboxes: make(map[int]*projectSandbox),
         }
 }
@@ -408,22 +410,38 @@ func (t *turn) appendToolResult(id, output string) {
 // The entire check-and-create sequence runs under sbMu to prevent a race
 // where two parallel tool calls both see no workspace and spin up new ones.
 func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime, error) {
+        // Step 1: get or create the per-project lock (brief global lock)
         a.sbMu.Lock()
-        defer a.sbMu.Unlock()
+        if a.sbLocks[projectID] == nil {
+                a.sbLocks[projectID] = &sync.Mutex{}
+        }
+        pLock := a.sbLocks[projectID]
+        a.sbMu.Unlock()
 
-        // Re-check inside the lock — another goroutine may have created it
-        // while we were waiting to acquire.
-        if ps := a.sandboxes[projectID]; ps != nil {
+        // Step 2: serialise calls for the SAME project only.
+        // Different projects now run concurrently; sbMu is never held during
+        // slow network ops (Ping / Connect / Create / shell).
+        pLock.Lock()
+        defer pLock.Unlock()
+
+        // Step 3: check in-memory handle (brief global lock)
+        a.sbMu.Lock()
+        ps := a.sandboxes[projectID]
+        a.sbMu.Unlock()
+
+        if ps != nil {
                 if sr, ok := ps.runtime.(*tools.SandboxRuntime); ok && sr.Sandbox.Ping(ctx) {
                         return ps.runtime, nil
                 }
-                log.Printf("[agent] in-memory workspace is unreachable — reconnecting")
+                log.Printf("[agent] in-memory workspace unreachable â reconnecting")
+                a.sbMu.Lock()
                 delete(a.sandboxes, projectID)
+                a.sbMu.Unlock()
         }
 
         daytonaKey := a.db.GetConfig(ctx, 0, "daytona_api_key")
         if daytonaKey == "" {
-                return nil, errors.New("daytona_api_key is not configured — set it in Setup → Sandbox")
+                return nil, errors.New("daytona_api_key is not configured â set it in Setup â Sandbox")
         }
 
         mkRuntime := func(sb *sandbox.Sandbox) *tools.SandboxRuntime {
@@ -437,9 +455,15 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 }
         }
 
-        // Try reconnecting to a previously used workspace (may be auto-paused).
+        saveAndReturn := func(runtime *tools.SandboxRuntime) tools.Runtime {
+                a.sbMu.Lock()
+                a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
+                a.sbMu.Unlock()
+                return runtime
+        }
+
+        // Step 4: try reconnecting to saved workspace
         if savedID := a.db.GetConfig(ctx, projectID, "_sandbox_id"); savedID != "" {
-                // Ping first — if still running, skip the start call entirely.
                 handle := sandbox.NewHandle(daytonaKey, savedID)
                 if handle.ID != "" && handle.Ping(ctx) {
                         runtime := mkRuntime(handle)
@@ -448,13 +472,12 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                                         log.Printf("[agent] git sync failed: %s", r.Output)
                                 }
                         }
-                        a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
-                        a.hooks.Send(projectID, "✅ workspace reconnected, branch: `kaptaan`")
-                        return runtime, nil
+                        a.hooks.Send(projectID, "â workspace reconnected, branch: `kaptaan`")
+                        return saveAndReturn(runtime), nil
                 }
 
-                // Workspace is auto-paused — start it back up.
-                a.hooks.Send(projectID, "🔄 starting workspace…")
+                // Workspace auto-paused â start it back up.
+                a.hooks.Send(projectID, "ð starting workspaceâ¦")
                 sb, err := sandbox.Connect(ctx, daytonaKey, savedID)
                 if err == nil {
                         runtime := mkRuntime(sb)
@@ -463,23 +486,19 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                                         log.Printf("[agent] git sync failed: %s", r.Output)
                                 }
                         }
-                        a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
-                        a.hooks.Send(projectID, "✅ workspace ready, branch: `kaptaan`")
-                        return runtime, nil
+                        a.hooks.Send(projectID, "â workspace ready, branch: `kaptaan`")
+                        return saveAndReturn(runtime), nil
                 }
-                // Saved ID is stale — fall through to create a fresh workspace.
-                log.Printf("[agent] workspace reconnect failed (%v) — creating new one", err)
+                log.Printf("[agent] workspace reconnect failed (%v) â creating new one", err)
                 _ = a.db.SetConfig(ctx, projectID, "_sandbox_id", "")
         }
 
-        a.hooks.Send(projectID, "🛠 creating workspace…")
+        // Step 5: create a brand-new workspace
+        a.hooks.Send(projectID, "ð  creating workspaceâ¦")
         sb, err := sandbox.Create(ctx, daytonaKey, "", 0)
         if err != nil {
                 return nil, fmt.Errorf("workspace create: %w", err)
         }
-
-        // Persist workspace ID for future reconnects (stored in config, not
-        // memories, so the agent cannot accidentally delete it).
         if err := a.db.SetConfig(ctx, projectID, "_sandbox_id", sb.ID); err != nil {
                 log.Printf("[agent] failed to store workspace id: %v", err)
         }
@@ -505,14 +524,13 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 )
                 if r := runtime.Shell(ctx, cmd, 180); r.IsErr {
                         log.Printf("[agent] git clone failed: %s", r.Output)
-                        a.hooks.Send(projectID, "⚠️ git clone failed:\n```\n"+truncate(r.Output, 800)+"\n```\nProceeding with empty workspace.")
+                        a.hooks.Send(projectID, "â ï¸ git clone failed:\n```\n"+truncate(r.Output, 800)+"\n```\nProceeding with empty workspace.")
                 } else {
-                        a.hooks.Send(projectID, "✅ repo cloned, branch: `kaptaan`")
+                        a.hooks.Send(projectID, "â repo cloned, branch: `kaptaan`")
                 }
         }
 
-        a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
-        return runtime, nil
+        return saveAndReturn(runtime), nil
 }
 
 // ReadScratchpad reads the scratchpad from the DB.
