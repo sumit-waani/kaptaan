@@ -1,3 +1,5 @@
+github.com/daytonaio/daytona/libs/sdk-go v0.175.0 h1:d82qp5S4bWq7k7l80Xo6FMARfwwKeadke79UI24XO4g=
+github.com/daytonaio/daytona/libs/sdk-go v0.175.0/go.mod h1:viMTjJedYAkCBzPx6obHHxF4i8x2LAH6bBAMrfFpWt4=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e h1:ijClszYn+mADRFY17kjQEVQ1XRhq2/JR1M3sGqeJoxs=

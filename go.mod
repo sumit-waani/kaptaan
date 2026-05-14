@@ -1,6 +1,6 @@
 module github.com/cto-agent/cto-agent
 
-go 1.25.0
+go 1.25.4
 
 require (
 	golang.org/x/crypto v0.17.0
@@ -8,6 +8,7 @@ require (
 )
 
 require (
+	github.com/daytonaio/daytona/libs/sdk-go v0.175.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
