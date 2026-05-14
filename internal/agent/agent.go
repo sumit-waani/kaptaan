@@ -145,18 +145,7 @@ func (a *Agent) runLoop(ctx context.Context, projectID int, text string) error {
                         a.commitTurn(projectID, t)
                 }
 
-                // Check queue before releasing the running flag.
-                select {
-                case next := <-a.queue:
-                        if a.hooks.NotifyState != nil {
-                                a.hooks.NotifyState(projectID)
-                        }
-                        // Stay running and process the queued message.
-                        _ = a.runLoop(ctx, next.projectID, next.text)
-                        return
-                default:
-                }
-                // All tasks done — pause the sandbox to save resources.
+                // Always clean up the current project before checking the queue.
                 // Daytona also auto-pauses after 15 min of inactivity.
                 a.pauseSandbox(projectID)
                 a.mu.Lock()
@@ -164,6 +153,19 @@ func (a *Agent) runLoop(ctx context.Context, projectID int, text string) error {
                 a.mu.Unlock()
                 if a.hooks.NotifyState != nil {
                         a.hooks.NotifyState(projectID)
+                }
+
+                // Check queue for a pending message (any project).
+                select {
+                case next := <-a.queue:
+                        a.mu.Lock()
+                        a.running[next.projectID] = true
+                        a.mu.Unlock()
+                        if a.hooks.NotifyState != nil {
+                                a.hooks.NotifyState(next.projectID)
+                        }
+                        _ = a.runLoop(ctx, next.projectID, next.text)
+                default:
                 }
         }()
 
