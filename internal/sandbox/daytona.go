@@ -28,15 +28,10 @@ type Sandbox struct {
         orgID  string
 }
 
-// workspaceState is the state sub-object returned by the Daytona API.
-type workspaceState struct {
-        Name string `json:"name"`
-}
-
 // workspaceInfo is a partial sandbox response from Daytona.
 type workspaceInfo struct {
-        ID    string         `json:"id"`
-        State workspaceState `json:"state"`
+        ID    string `json:"id"`
+        State string `json:"state"`
 }
 
 // RunResult holds the outcome of one shell command.
@@ -152,7 +147,7 @@ func (s *Sandbox) Ping(ctx context.Context) bool {
         if err := json.NewDecoder(res.Body).Decode(&ws); err != nil {
                 return false
         }
-        return ws.State.Name == "started"
+        return ws.State == "started"
 }
 
 // waitReady polls until sandbox state is "started" or the timeout passes.
