@@ -13,7 +13,7 @@
   --text:    #f2f2f7;
   --white:   #ffffff;
   --accent:  #0a84ff;
-  --font:    ui-monospace, 'Cascadia Code', 'SF Mono', Monaco, Menlo, Consolas, monospace;
+  --font:    ui-monospace, 'Cascadia Code', 'SF Mono', Monaco, Menlo, Consolas, monospace, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji';
   --radius:  12px;
   --safe-t:  env(safe-area-inset-top, 0px);
   --safe-b:  env(safe-area-inset-bottom, 0px);
