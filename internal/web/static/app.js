@@ -571,7 +571,7 @@ async function loadGlobalConfig() {
   const set = (id, key) => { const el = document.getElementById(id); if (el && c[key] !== undefined) el.value = c[key]; };
   set('setup-deepseek-key',   'deepseek_api_key');
   set('setup-deepseek-model', 'deepseek_model');
-  set('setup-e2b-key',        'e2b_api_key');
+  set('setup-daytona-key',    'daytona_api_key');
   set('setup-system-prompt',  'system_prompt');
 }
 
@@ -584,7 +584,7 @@ async function saveGlobalConfig() {
   const fields = [
     {id: 'setup-deepseek-key',   key: 'deepseek_api_key'},
     {id: 'setup-deepseek-model', key: 'deepseek_model'},
-    {id: 'setup-e2b-key',        key: 'e2b_api_key'},
+    {id: 'setup-daytona-key',    key: 'daytona_api_key'},
     {id: 'setup-system-prompt',  key: 'system_prompt'},
   ];
   for (const f of fields) {

@@ -9,7 +9,7 @@ import (
 var globalConfigKeys = []string{
         "deepseek_api_key",
         "deepseek_model",
-        "e2b_api_key",
+        "daytona_api_key",
         "system_prompt",
 }
 

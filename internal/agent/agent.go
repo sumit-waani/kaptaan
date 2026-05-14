@@ -29,8 +29,8 @@ type Hooks struct {
         FinalizeStream func(projectID int)
 }
 
-// projectSandbox is the live E2B sandbox, shared across all turns until
-// the agent signals task completion via reset_sandbox.
+// projectSandbox is the live Daytona workspace, shared across all turns
+// until the task finishes. Daytona auto-pauses on inactivity.
 type projectSandbox struct {
         runtime tools.Runtime
         branch  string
@@ -400,13 +400,13 @@ func (t *turn) appendToolResult(id, output string) {
         })
 }
 
-// ensureSandbox returns the persistent sandbox. On first call it tries to
-// resume a previously paused sandbox (ID stored in DB), falling back to
-// creating a fresh one if none exists or the saved ID is stale.
+// ensureSandbox returns the persistent Daytona workspace for a project.
+// On first call it tries to reconnect to a previously used workspace (ID in DB),
+// starting it if it was auto-paused. Falls back to creating a fresh workspace
+// if none exists or the saved ID is stale.
 //
 // The entire check-and-create sequence runs under sbMu to prevent a race
-// where two parallel tool calls both see no sandbox and both spin up a new
-// E2B instance simultaneously.
+// where two parallel tool calls both see no workspace and spin up new ones.
 func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime, error) {
         a.sbMu.Lock()
         defer a.sbMu.Unlock()
@@ -414,95 +414,79 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
         // Re-check inside the lock — another goroutine may have created it
         // while we were waiting to acquire.
         if ps := a.sandboxes[projectID]; ps != nil {
-                // Quick health-check: if envd is unreachable (paused/killed by E2B in-session),
-                // drop the stale entry and fall through to reconnect via DB.
                 if sr, ok := ps.runtime.(*tools.SandboxRuntime); ok && sr.Sandbox.Ping(ctx) {
                         return ps.runtime, nil
                 }
-                log.Printf("[agent] in-memory sandbox is unreachable — reconnecting")
+                log.Printf("[agent] in-memory workspace is unreachable — reconnecting")
                 delete(a.sandboxes, projectID)
         }
 
-        e2bKey := a.db.GetConfig(ctx, 0, "e2b_api_key")
-        if e2bKey == "" {
-                return nil, errors.New("e2b_api_key is not configured — set it in Setup → Sandbox")
+        daytonaKey := a.db.GetConfig(ctx, 0, "daytona_api_key")
+        if daytonaKey == "" {
+                return nil, errors.New("daytona_api_key is not configured — set it in Setup → Sandbox")
         }
 
-        // Try to reconnect to a previously saved (paused) sandbox.
+        mkRuntime := func(sb *sandbox.Sandbox) *tools.SandboxRuntime {
+                return &tools.SandboxRuntime{
+                        Sandbox: sb,
+                        Cwd:     "/home/daytona/workspace",
+                        Env: map[string]string{
+                                "HOME": "/home/daytona",
+                                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                        },
+                }
+        }
+
+        // Try reconnecting to a previously used workspace (may be auto-paused).
         if savedID := a.db.GetConfig(ctx, projectID, "_sandbox_id"); savedID != "" {
-                // Ping first — if sandbox is still running, reuse it without
-                // calling /resume (which may fail on an already-live sandbox).
-                handle := sandbox.NewHandle(e2bKey, savedID)
+                // Ping first — if still running, skip the start call entirely.
+                handle := sandbox.NewHandle(daytonaKey, savedID)
                 if handle.ID != "" && handle.Ping(ctx) {
-                        runtime := &tools.SandboxRuntime{
-                                Sandbox: handle,
-                                Cwd:     "/home/user/workspace",
-                                Env: map[string]string{
-                                        "HOME": "/home/user",
-                                        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                                },
-                        }
-                        // Sync with latest from origin/main on every reconnect.
+                        runtime := mkRuntime(handle)
                         if a.db.GetConfig(ctx, projectID, "github_token") != "" {
-                                if r := runtime.Shell(ctx, "cd /home/user/workspace && git fetch origin && git merge origin/main --no-edit", 60); r.IsErr {
+                                if r := runtime.Shell(ctx, "git fetch origin && git merge origin/main --no-edit", 60); r.IsErr {
                                         log.Printf("[agent] git sync failed: %s", r.Output)
                                 }
                         }
                         a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
-                        a.hooks.Send(projectID, "✅ sandbox reconnected, branch: `kaptaan`")
+                        a.hooks.Send(projectID, "✅ workspace reconnected, branch: `kaptaan`")
                         return runtime, nil
                 }
 
-                // Sandbox is paused or unreachable — resume it.
-                a.hooks.Send(projectID, "🔄 resuming paused sandbox…")
-                sb, err := sandbox.Connect(ctx, e2bKey, savedID)
+                // Workspace is auto-paused — start it back up.
+                a.hooks.Send(projectID, "🔄 starting workspace…")
+                sb, err := sandbox.Connect(ctx, daytonaKey, savedID)
                 if err == nil {
-                        runtime := &tools.SandboxRuntime{
-                                Sandbox: sb,
-                                Cwd:     "/home/user/workspace",
-                                Env: map[string]string{
-                                        "HOME": "/home/user",
-                                        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                                },
-                        }
-                        // Sync with latest from origin/main on every reconnect.
+                        runtime := mkRuntime(sb)
                         if a.db.GetConfig(ctx, projectID, "github_token") != "" {
-                                if r := runtime.Shell(ctx, "cd /home/user/workspace && git fetch origin && git merge origin/main --no-edit", 60); r.IsErr {
+                                if r := runtime.Shell(ctx, "git fetch origin && git merge origin/main --no-edit", 60); r.IsErr {
                                         log.Printf("[agent] git sync failed: %s", r.Output)
                                 }
                         }
                         a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
-                        a.hooks.Send(projectID, "✅ sandbox resumed, branch: `kaptaan`")
+                        a.hooks.Send(projectID, "✅ workspace ready, branch: `kaptaan`")
                         return runtime, nil
                 }
-                // Saved ID is stale — fall through to create a fresh sandbox.
-                log.Printf("[agent] sandbox resume failed (%v) — creating new one", err)
+                // Saved ID is stale — fall through to create a fresh workspace.
+                log.Printf("[agent] workspace reconnect failed (%v) — creating new one", err)
                 _ = a.db.SetConfig(ctx, projectID, "_sandbox_id", "")
         }
 
-        a.hooks.Send(projectID, "🛠 spinning up sandbox…")
-        sb, err := sandbox.Create(ctx, e2bKey, "base", 3600)
+        a.hooks.Send(projectID, "🛠 creating workspace…")
+        sb, err := sandbox.Create(ctx, daytonaKey, "", 0)
         if err != nil {
-                return nil, fmt.Errorf("sandbox create: %w", err)
+                return nil, fmt.Errorf("workspace create: %w", err)
         }
 
-        // Persist sandbox reference for future reconnects (stored in config, not
+        // Persist workspace ID for future reconnects (stored in config, not
         // memories, so the agent cannot accidentally delete it).
-        sandboxRef := sb.ID + ":" + sb.ClientID
-        if err := a.db.SetConfig(ctx, projectID, "_sandbox_id", sandboxRef); err != nil {
-                log.Printf("[agent] failed to store sandbox id: %v", err)
+        if err := a.db.SetConfig(ctx, projectID, "_sandbox_id", sb.ID); err != nil {
+                log.Printf("[agent] failed to store workspace id: %v", err)
         }
 
-        runtime := &tools.SandboxRuntime{
-                Sandbox: sb,
-                Cwd:     "/home/user/workspace",
-                Env: map[string]string{
-                        "HOME": "/home/user",
-                        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                },
-        }
+        runtime := mkRuntime(sb)
 
-        if r := runtime.Shell(ctx, "mkdir -p /home/user/workspace", 30); r.IsErr {
+        if r := runtime.Shell(ctx, "mkdir -p /home/daytona/workspace", 30); r.IsErr {
                 log.Printf("[agent] mkdir workspace: %s", r.Output)
         }
 
@@ -512,7 +496,7 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
         if repoURL != "" && githubToken != "" {
                 cloneURL := injectToken(repoURL, githubToken)
                 cmd := fmt.Sprintf(
-                        "cd /home/user && rm -rf workspace && git clone %s workspace"+
+                        "cd /home/daytona && rm -rf workspace && git clone %s workspace"+
                                 " && cd workspace"+
                                 " && git config user.email kaptaan@local"+
                                 " && git config user.name Kaptaan"+
@@ -535,20 +519,6 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
 // Used by the settings UI.
 func (a *Agent) ReadScratchpad(ctx context.Context, projectID int) (string, error) {
         return a.db.GetProjectScratchpad(ctx, projectID)
-}
-
-// pauseSandbox removes the in-memory sandbox reference so the next task
-// reconnects to the paused E2B instance. The sandbox itself is NOT killed —
-// it stays alive (or auto-pauses on timeout) and is resumed by ensureSandbox.
-// The _sandbox_id in DB is preserved so reconnect works.
-func (a *Agent) pauseSandbox(ctx context.Context, projectID int) {
-        a.sbMu.Lock()
-        ps := a.sandboxes[projectID]
-        delete(a.sandboxes, projectID)
-        a.sbMu.Unlock()
-        // ps.runtime.Close() is intentionally NOT called — we keep the E2B
-        // sandbox alive so it can be resumed on the next task.
-        _ = ps
 }
 
 // systemPrompt is built from the DB. There is no hardcoded fallback.
@@ -734,12 +704,8 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
                 if err != nil {
                         return "ERROR: " + err.Error()
                 }
-                r := rt.Shell(ctx, "cd /home/user/workspace && git add -A && git commit -m "+shellQuote(msg), 60)
+                r := rt.Shell(ctx, "git add -A && git commit -m "+shellQuote(msg), 60)
                 return r.Output
-
-        case "reset_sandbox":
-                        t.a.pauseSandbox(ctx, t.projectID)
-                        return "sandbox paused"
 
         default:
                 return fmt.Sprintf("ERROR: unknown tool %q", name)

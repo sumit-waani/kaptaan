@@ -10,20 +10,19 @@ import (
         "github.com/cto-agent/cto-agent/internal/sandbox"
 )
 
-// SandboxRuntime backs an Executor with a live E2B sandbox. The Cwd field is
-// the absolute path inside the sandbox where relative file/shell ops resolve.
+// SandboxRuntime backs an Executor with a live Daytona workspace. The Cwd field
+// is the absolute path inside the workspace where relative file/shell ops resolve.
 type SandboxRuntime struct {
         Sandbox *sandbox.Sandbox
         Cwd     string
         Env     map[string]string
 }
 
-// shellAnchorDir is a path that is guaranteed to exist after bootstrap. We
-// always pass it as the envd `cwd`, because E2B's envd rejects Run() requests
-// when the requested cwd does not exist (and individual commands may legitimately
-// delete and recreate r.Cwd, e.g. `git clone`). Logical placement inside r.Cwd
-// is handled by the per-op `cd` prefix in tools.go.
-const shellAnchorDir = "/home/user"
+// shellAnchorDir is a path that is guaranteed to exist in a fresh workspace.
+// We always pass it as the toolbox cwd, because Daytona rejects Run() requests
+// when the requested cwd does not yet exist (e.g. before git clone creates it).
+// Logical placement inside r.Cwd is handled by the per-op `cd` prefix.
+const shellAnchorDir = "/home/daytona"
 
 func (r *SandboxRuntime) Shell(ctx context.Context, cmd string, timeoutSecs int) Result {
         if timeoutSecs <= 0 {
@@ -78,11 +77,10 @@ func (r *SandboxRuntime) ReadFile(ctx context.Context, path string) Result {
 
 func (r *SandboxRuntime) Workdir() string { return r.Cwd }
 
+// Close is a no-op — Daytona workspaces are not killed by the agent.
+// The workspace auto-pauses on inactivity and is resumed on the next task.
 func (r *SandboxRuntime) Close(ctx context.Context) error {
-        if r.Sandbox == nil {
-                return nil
-        }
-        return r.Sandbox.Kill(ctx)
+        return nil
 }
 
 func (r *SandboxRuntime) absPath(p string) string {
