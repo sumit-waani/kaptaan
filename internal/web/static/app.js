@@ -572,6 +572,7 @@ async function loadGlobalConfig() {
   set('setup-deepseek-key',   'deepseek_api_key');
   set('setup-deepseek-model', 'deepseek_model');
   set('setup-daytona-key',    'daytona_api_key');
+  set('setup-daytona-org-id', 'daytona_org_id');
   set('setup-system-prompt',  'system_prompt');
 }
 
@@ -585,6 +586,7 @@ async function saveGlobalConfig() {
     {id: 'setup-deepseek-key',   key: 'deepseek_api_key'},
     {id: 'setup-deepseek-model', key: 'deepseek_model'},
     {id: 'setup-daytona-key',    key: 'daytona_api_key'},
+    {id: 'setup-daytona-org-id', key: 'daytona_org_id'},
     {id: 'setup-system-prompt',  key: 'system_prompt'},
   ];
   for (const f of fields) {
