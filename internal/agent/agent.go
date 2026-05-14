@@ -531,55 +531,10 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
         return runtime, nil
 }
 
-// ReadScratchpad reads scratchpad.md from the active sandbox.
-// Used by the settings UI. Does not spin up a new sandbox if none exists.
+// ReadScratchpad reads the scratchpad from the DB.
+// Used by the settings UI.
 func (a *Agent) ReadScratchpad(ctx context.Context, projectID int) (string, error) {
-        a.sbMu.Lock()
-        ps := a.sandboxes[projectID]
-        a.sbMu.Unlock()
-
-        if ps != nil {
-                r := ps.runtime.ReadFile(ctx, "/home/user/workspace/scratchpad.md")
-                if r.IsErr {
-                        return "", fmt.Errorf("%s", r.Output)
-                }
-                return r.Output, nil
-        }
-
-        // No in-memory sandbox — try to reconnect to a paused one from DB.
-        e2bKey := a.db.GetConfig(ctx, 0, "e2b_api_key")
-        if e2bKey == "" {
-                return "", fmt.Errorf("no active sandbox")
-        }
-        savedID := a.db.GetConfig(ctx, projectID, "_sandbox_id")
-        if savedID == "" {
-                return "", fmt.Errorf("no active sandbox — send a task first")
-        }
-        // Ping first — if still running, reuse without /resume.
-        handle := sandbox.NewHandle(e2bKey, savedID)
-        if handle.ID == "" || !handle.Ping(ctx) {
-                var err error
-                handle, err = sandbox.Connect(ctx, e2bKey, savedID)
-                if err != nil {
-                        return "", fmt.Errorf("sandbox unavailable: %w", err)
-                }
-        }
-        rt := &tools.SandboxRuntime{
-                Sandbox: handle,
-                Cwd:     "/home/user/workspace",
-                Env: map[string]string{
-                        "HOME": "/home/user",
-                        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                },
-        }
-        a.sbMu.Lock()
-        a.sandboxes[projectID] = &projectSandbox{runtime: rt, branch: "kaptaan"}
-        a.sbMu.Unlock()
-        r := rt.ReadFile(ctx, "/home/user/workspace/scratchpad.md")
-        if r.IsErr {
-                return "", fmt.Errorf("%s", r.Output)
-        }
-        return r.Output, nil
+        return a.db.GetProjectScratchpad(ctx, projectID)
 }
 
 // pauseSandbox removes the in-memory sandbox reference so the next task
@@ -646,25 +601,17 @@ func (t *turn) dispatch(ctx context.Context, call llm.ToolCall) string {
 
         case "write_scratchpad":
                 content := getStr(args, "content")
-                rt, err := t.a.ensureSandbox(ctx, t.projectID)
-                if err != nil {
+                if err := t.a.db.SetProjectScratchpad(ctx, t.projectID, content); err != nil {
                         return "ERROR: " + err.Error()
                 }
-                r := rt.WriteFile(ctx, "/home/user/workspace/scratchpad.md", []byte(content))
-                if !r.IsErr {
-                        if dbErr := t.a.db.SetProjectScratchpad(ctx, t.projectID, content); dbErr != nil {
-                                log.Printf("[agent] SetProjectScratchpad: %v", dbErr)
-                        }
-                }
-                return r.Output
+                return "ok"
 
         case "read_scratchpad":
-                rt, err := t.a.ensureSandbox(ctx, t.projectID)
+                content, err := t.a.db.GetProjectScratchpad(ctx, t.projectID)
                 if err != nil {
                         return "ERROR: " + err.Error()
                 }
-                r := rt.ReadFile(ctx, "/home/user/workspace/scratchpad.md")
-                return r.Output
+                return content
 
         case "list_memories":
                 ms, err := t.a.db.ListMemories(ctx, t.projectID)
