@@ -156,6 +156,9 @@ func (a *Agent) runLoop(ctx context.Context, projectID int, text string) error {
                         return
                 default:
                 }
+                // All tasks done — pause the sandbox to save resources.
+                // Daytona also auto-pauses after 15 min of inactivity.
+                a.pauseSandbox(projectID)
                 a.mu.Lock()
                 a.running[projectID] = false
                 a.mu.Unlock()
@@ -402,136 +405,88 @@ func (t *turn) appendToolResult(id, output string) {
         })
 }
 
-// ensureSandbox returns the persistent Daytona workspace for a project.
-// On first call it tries to reconnect to a previously used workspace (ID in DB),
-// starting it if it was auto-paused. Falls back to creating a fresh workspace
-// if none exists or the saved ID is stale.
-//
-// The entire check-and-create sequence runs under sbMu to prevent a race
-// where two parallel tool calls both see no workspace and spin up new ones.
+// ensureSandbox returns the live Daytona sandbox for a project.
+// Uses the sandbox ID stored in the DB (set via Setup -> Projects -> Assign Sandbox).
+// Resumes the sandbox if paused; returns immediately if already started.
+// Result is cached in-memory for the duration of the task.
 func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime, error) {
-        // Step 1: get or create the per-project lock (brief global lock)
-        a.sbMu.Lock()
-        if a.sbLocks[projectID] == nil {
-                a.sbLocks[projectID] = &sync.Mutex{}
-        }
-        pLock := a.sbLocks[projectID]
-        a.sbMu.Unlock()
+	// Per-project lock prevents parallel tool calls from resuming the sandbox twice.
+	a.sbMu.Lock()
+	if a.sbLocks[projectID] == nil {
+		a.sbLocks[projectID] = &sync.Mutex{}
+	}
+	pLock := a.sbLocks[projectID]
+	a.sbMu.Unlock()
 
-        // Step 2: serialise calls for the SAME project only.
-        // Different projects now run concurrently; sbMu is never held during
-        // slow network ops (Ping / Connect / Create / shell).
-        pLock.Lock()
-        defer pLock.Unlock()
+	pLock.Lock()
+	defer pLock.Unlock()
 
-        // Step 3: check in-memory handle (brief global lock)
-        a.sbMu.Lock()
-        ps := a.sandboxes[projectID]
-        a.sbMu.Unlock()
+	// Return cached in-memory handle if available.
+	a.sbMu.Lock()
+	ps := a.sandboxes[projectID]
+	a.sbMu.Unlock()
+	if ps != nil {
+		return ps.runtime, nil
+	}
 
-        if ps != nil {
-                if sr, ok := ps.runtime.(*tools.SandboxRuntime); ok && sr.Sandbox.Ping(ctx) {
-                        return ps.runtime, nil
-                }
-                log.Printf("[agent] in-memory workspace unreachable â reconnecting")
-                a.sbMu.Lock()
-                delete(a.sandboxes, projectID)
-                a.sbMu.Unlock()
-        }
+	sandboxID := a.db.GetConfig(ctx, projectID, "_sandbox_id")
+	if sandboxID == "" {
+		return nil, errors.New("no sandbox assigned — open Setup → Projects and click 'Assign Sandbox'")
+	}
+	apiKey := a.db.GetConfig(ctx, 0, "daytona_api_key")
+	if apiKey == "" {
+		return nil, errors.New("daytona_api_key not configured — set it in Setup")
+	}
+	orgID := a.db.GetConfig(ctx, 0, "daytona_org_id")
 
-        daytonaKey := a.db.GetConfig(ctx, 0, "daytona_api_key")
-        if daytonaKey == "" {
-                return nil, errors.New("daytona_api_key is not configured â set it in Setup â Sandbox")
-        }
+	a.hooks.Send(projectID, "⏳ resuming sandbox…")
+	sb, err := sandbox.Resume(ctx, apiKey, orgID, sandboxID)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox resume: %w", err)
+	}
+	a.hooks.Send(projectID, "✅ sandbox ready")
 
-	daytonaOrgID := a.db.GetConfig(ctx, 0, "daytona_org_id")
-        mkRuntime := func(sb *sandbox.Sandbox) *tools.SandboxRuntime {
-                return &tools.SandboxRuntime{
-                        Sandbox: sb,
-                        Cwd:     "/home/daytona/workspace",
-                        Env: map[string]string{
-                                "HOME": "/home/daytona",
-                                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                        },
-                }
-        }
+	runtime := &tools.SandboxRuntime{
+		Sandbox: sb,
+		Cwd:     "/home/daytona/workspace",
+		Env: map[string]string{
+			"HOME": "/home/daytona",
+			"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		},
+	}
+	a.sbMu.Lock()
+	a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
+	a.sbMu.Unlock()
+	return runtime, nil
+}
 
-        saveAndReturn := func(runtime *tools.SandboxRuntime) tools.Runtime {
-                a.sbMu.Lock()
-                a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
-                a.sbMu.Unlock()
-                return runtime
-        }
+// ReleaseSandbox drops the in-memory sandbox handle for a project.
+// Call when the sandbox is deleted so the next task does a fresh resume.
+func (a *Agent) ReleaseSandbox(projectID int) {
+	a.sbMu.Lock()
+	delete(a.sandboxes, projectID)
+	a.sbMu.Unlock()
+}
 
-        // Step 4: try reconnecting to saved workspace
-        if savedID := a.db.GetConfig(ctx, projectID, "_sandbox_id"); savedID != "" {
-                handle := sandbox.NewHandle(daytonaKey, daytonaOrgID, savedID)
-                if handle.ID != "" && handle.Ping(ctx) {
-                        runtime := mkRuntime(handle)
-                        if a.db.GetConfig(ctx, projectID, "github_token") != "" {
-                                if r := runtime.Shell(ctx, "git fetch origin && git merge origin/main --no-edit", 60); r.IsErr {
-                                        log.Printf("[agent] git sync failed: %s", r.Output)
-                                }
-                        }
-                        a.hooks.Send(projectID, "â workspace reconnected, branch: `kaptaan`")
-                        return saveAndReturn(runtime), nil
-                }
+// pauseSandbox clears the in-memory handle and stops the sandbox on Daytona.
+// The stop call is non-blocking (goroutine); Daytona also auto-pauses after inactivity.
+func (a *Agent) pauseSandbox(projectID int) {
+	a.sbMu.Lock()
+	delete(a.sandboxes, projectID)
+	a.sbMu.Unlock()
 
-                // Workspace auto-paused â start it back up.
-                a.hooks.Send(projectID, "ð starting workspaceâ¦")
-                sb, err := sandbox.Connect(ctx, daytonaKey, daytonaOrgID, savedID)
-                if err == nil {
-                        runtime := mkRuntime(sb)
-                        if a.db.GetConfig(ctx, projectID, "github_token") != "" {
-                                if r := runtime.Shell(ctx, "git fetch origin && git merge origin/main --no-edit", 60); r.IsErr {
-                                        log.Printf("[agent] git sync failed: %s", r.Output)
-                                }
-                        }
-                        a.hooks.Send(projectID, "â workspace ready, branch: `kaptaan`")
-                        return saveAndReturn(runtime), nil
-                }
-                log.Printf("[agent] workspace reconnect failed (%v) â creating new one", err)
-                _ = a.db.SetConfig(ctx, projectID, "_sandbox_id", "")
-        }
-
-        // Step 5: create a brand-new workspace
-        a.hooks.Send(projectID, "ð  creating workspaceâ¦")
-        sb, err := sandbox.Create(ctx, daytonaKey, daytonaOrgID, 0)
-        if err != nil {
-                return nil, fmt.Errorf("workspace create: %w", err)
-        }
-        if err := a.db.SetConfig(ctx, projectID, "_sandbox_id", sb.ID); err != nil {
-                log.Printf("[agent] failed to store workspace id: %v", err)
-        }
-
-        runtime := mkRuntime(sb)
-
-        if r := runtime.Shell(ctx, "mkdir -p /home/daytona/workspace", 30); r.IsErr {
-                log.Printf("[agent] mkdir workspace: %s", r.Output)
-        }
-
-        repoURL := normalizeRepoURL(a.db.GetConfig(ctx, projectID, "repo_url"))
-        githubToken := a.db.GetConfig(ctx, projectID, "github_token")
-
-        if repoURL != "" && githubToken != "" {
-                cloneURL := injectToken(repoURL, githubToken)
-                cmd := fmt.Sprintf(
-                        "cd /home/daytona && rm -rf workspace && git clone %s workspace"+
-                                " && cd workspace"+
-                                " && git config user.email kaptaan@local"+
-                                " && git config user.name Kaptaan"+
-                                " && (git checkout kaptaan 2>/dev/null || git checkout -b kaptaan)",
-                        shellQuote(cloneURL),
-                )
-                if r := runtime.Shell(ctx, cmd, 180); r.IsErr {
-                        log.Printf("[agent] git clone failed: %s", r.Output)
-                        a.hooks.Send(projectID, "â ï¸ git clone failed:\n```\n"+truncate(r.Output, 800)+"\n```\nProceeding with empty workspace.")
-                } else {
-                        a.hooks.Send(projectID, "â repo cloned, branch: `kaptaan`")
-                }
-        }
-
-        return saveAndReturn(runtime), nil
+	ctx := context.Background()
+	sandboxID := a.db.GetConfig(ctx, projectID, "_sandbox_id")
+	apiKey := a.db.GetConfig(ctx, 0, "daytona_api_key")
+	orgID := a.db.GetConfig(ctx, 0, "daytona_org_id")
+	if sandboxID == "" || apiKey == "" {
+		return
+	}
+	go func() {
+		if err := sandbox.Stop(ctx, apiKey, orgID, sandboxID); err != nil {
+			log.Printf("[agent] pause sandbox %s: %v", sandboxID, err)
+		}
+	}()
 }
 
 // ReadScratchpad reads the scratchpad from the DB.

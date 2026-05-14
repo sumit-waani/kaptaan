@@ -727,6 +727,39 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 }
 .proj-create-btn:active { opacity: 0.8; }
 
+/* ─── Sandbox row (inside project card) ─────────────────────────────────── */
+.proj-item {
+  flex-wrap: wrap;
+}
+.proj-sandbox-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 0 2px 0;
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
+}
+.sandbox-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sandbox-dot-started  { background: #30d158; }
+.sandbox-dot-stopped  { background: #ff9f0a; }
+.sandbox-dot-none     { background: #636366; }
+.sandbox-dot-unknown  { background: #48484a; }
+.sandbox-state-text {
+  flex: 1;
+  font-size: 11px;
+  color: var(--dim);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ─── Memories ──────────────────────────────────────────────────────────── */
 .memory-item {
   padding: 12px 14px;

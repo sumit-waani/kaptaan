@@ -648,7 +648,131 @@ function renderProjectsList() {
     actions.appendChild(delBtn);
     item.appendChild(nameSpan);
     item.appendChild(actions);
+
+    // ── Sandbox section ──
+    const sbRow = document.createElement('div');
+    sbRow.className = 'proj-sandbox-row';
+
+    const sbDot = document.createElement('span');
+    sbDot.className = 'sandbox-dot sandbox-dot-unknown';
+
+    const sbState = document.createElement('span');
+    sbState.className   = 'sandbox-state-text';
+    sbState.textContent = 'loading…';
+
+    const sbAssignBtn = document.createElement('button');
+    sbAssignBtn.className   = 'proj-action-btn sandbox-assign-btn';
+    sbAssignBtn.textContent = 'assign sandbox';
+    sbAssignBtn.style.display = 'none';
+    sbAssignBtn.addEventListener('click', () => assignSandbox(p.id, sbRow));
+
+    const sbDeleteBtn = document.createElement('button');
+    sbDeleteBtn.className   = 'proj-action-btn danger sandbox-delete-btn';
+    sbDeleteBtn.textContent = 'delete sandbox';
+    sbDeleteBtn.style.display = 'none';
+    sbDeleteBtn.addEventListener('click', () => deleteSandbox(p.id, sbRow));
+
+    sbRow.appendChild(sbDot);
+    sbRow.appendChild(sbState);
+    sbRow.appendChild(sbAssignBtn);
+    sbRow.appendChild(sbDeleteBtn);
+    item.appendChild(sbRow);
+
     list.appendChild(item);
+
+    // Load sandbox status asynchronously.
+    loadSandboxStatus(p.id, sbRow);
+  }
+}
+
+async function loadSandboxStatus(projectId, sbRow) {
+  const sbDot   = sbRow.querySelector('.sandbox-dot');
+  const sbState = sbRow.querySelector('.sandbox-state-text');
+  const assignBtn = sbRow.querySelector('.sandbox-assign-btn');
+  const deleteBtn = sbRow.querySelector('.sandbox-delete-btn');
+
+  try {
+    const j = await apiCallRaw('/api/sandbox/status?project_id=' + projectId);
+    const st = (j && j.state) || 'unknown';
+    sbState.textContent = st === 'none' ? 'no sandbox' : st;
+    sbDot.className = 'sandbox-dot sandbox-dot-' + (
+      st === 'started' ? 'started' :
+      st === 'stopped' || st === 'stopping' ? 'stopped' :
+      st === 'none' ? 'none' : 'unknown'
+    );
+    if (st === 'none') {
+      assignBtn.style.display = '';
+      deleteBtn.style.display = 'none';
+    } else {
+      assignBtn.style.display = 'none';
+      deleteBtn.style.display = '';
+    }
+  } catch (_) {
+    sbState.textContent = 'error';
+    sbDot.className = 'sandbox-dot sandbox-dot-unknown';
+  }
+}
+
+async function assignSandbox(projectId, sbRow) {
+  const sbState   = sbRow.querySelector('.sandbox-state-text');
+  const sbDot     = sbRow.querySelector('.sandbox-dot');
+  const assignBtn = sbRow.querySelector('.sandbox-assign-btn');
+  const deleteBtn = sbRow.querySelector('.sandbox-delete-btn');
+
+  assignBtn.disabled  = true;
+  assignBtn.textContent = 'creating…';
+  sbState.textContent = 'creating sandbox…';
+  sbDot.className = 'sandbox-dot sandbox-dot-unknown';
+
+  try {
+    const j = await apiCallRaw('/api/sandbox/assign?project_id=' + projectId, {method: 'POST'});
+    if (j && j.error) {
+      sbState.textContent = j.error;
+      assignBtn.disabled  = false;
+      assignBtn.textContent = 'assign sandbox';
+      return;
+    }
+    sbState.textContent = j.clone || 'assigned';
+    sbDot.className = 'sandbox-dot sandbox-dot-started';
+    assignBtn.style.display = 'none';
+    deleteBtn.style.display = '';
+  } catch (_) {
+    sbState.textContent = 'error — try again';
+    assignBtn.disabled  = false;
+    assignBtn.textContent = 'assign sandbox';
+  }
+}
+
+async function deleteSandbox(projectId, sbRow) {
+  if (!confirm('Delete sandbox? The container and all its data will be removed from Daytona.')) return;
+
+  const sbState   = sbRow.querySelector('.sandbox-state-text');
+  const sbDot     = sbRow.querySelector('.sandbox-dot');
+  const assignBtn = sbRow.querySelector('.sandbox-assign-btn');
+  const deleteBtn = sbRow.querySelector('.sandbox-delete-btn');
+
+  deleteBtn.disabled  = true;
+  deleteBtn.textContent = 'deleting…';
+  sbState.textContent = 'deleting…';
+
+  try {
+    const j = await apiCallRaw('/api/sandbox/delete?project_id=' + projectId, {method: 'POST'});
+    if (j && j.error) {
+      sbState.textContent = j.error;
+      deleteBtn.disabled  = false;
+      deleteBtn.textContent = 'delete sandbox';
+      return;
+    }
+    sbState.textContent = 'no sandbox';
+    sbDot.className = 'sandbox-dot sandbox-dot-none';
+    deleteBtn.style.display = 'none';
+    assignBtn.style.display = '';
+    assignBtn.disabled = false;
+    assignBtn.textContent = 'assign sandbox';
+  } catch (_) {
+    sbState.textContent = 'error — try again';
+    deleteBtn.disabled  = false;
+    deleteBtn.textContent = 'delete sandbox';
   }
 }
 
