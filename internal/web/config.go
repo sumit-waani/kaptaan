@@ -10,6 +10,7 @@ var globalConfigKeys = []string{
         "deepseek_api_key",
         "deepseek_model",
         "daytona_api_key",
+        "daytona_org_id",
         "system_prompt",
 }
 

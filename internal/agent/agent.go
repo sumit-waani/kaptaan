@@ -444,6 +444,7 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
                 return nil, errors.New("daytona_api_key is not configured â set it in Setup â Sandbox")
         }
 
+	daytonaOrgID := a.db.GetConfig(ctx, 0, "daytona_org_id")
         mkRuntime := func(sb *sandbox.Sandbox) *tools.SandboxRuntime {
                 return &tools.SandboxRuntime{
                         Sandbox: sb,
@@ -464,7 +465,7 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
 
         // Step 4: try reconnecting to saved workspace
         if savedID := a.db.GetConfig(ctx, projectID, "_sandbox_id"); savedID != "" {
-                handle := sandbox.NewHandle(daytonaKey, savedID)
+                handle := sandbox.NewHandle(daytonaKey, daytonaOrgID, savedID)
                 if handle.ID != "" && handle.Ping(ctx) {
                         runtime := mkRuntime(handle)
                         if a.db.GetConfig(ctx, projectID, "github_token") != "" {
@@ -478,7 +479,7 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
 
                 // Workspace auto-paused â start it back up.
                 a.hooks.Send(projectID, "ð starting workspaceâ¦")
-                sb, err := sandbox.Connect(ctx, daytonaKey, savedID)
+                sb, err := sandbox.Connect(ctx, daytonaKey, daytonaOrgID, savedID)
                 if err == nil {
                         runtime := mkRuntime(sb)
                         if a.db.GetConfig(ctx, projectID, "github_token") != "" {
@@ -495,7 +496,7 @@ func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime
 
         // Step 5: create a brand-new workspace
         a.hooks.Send(projectID, "ð  creating workspaceâ¦")
-        sb, err := sandbox.Create(ctx, daytonaKey, "", 0)
+        sb, err := sandbox.Create(ctx, daytonaKey, daytonaOrgID, 0)
         if err != nil {
                 return nil, fmt.Errorf("workspace create: %w", err)
         }
