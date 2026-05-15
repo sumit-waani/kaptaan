@@ -707,7 +707,7 @@ func (s *Server) handleSandboxAssign(w http.ResponseWriter, r *http.Request) {
                                 " && cd workspace"+
                                 " && git config user.email kaptaan@local"+
                                 " && git config user.name Kaptaan"+
-                                " && (git checkout kaptaan 2>/dev/null || git checkout -b kaptaan)",
+                                " && (git ls-remote --exit-code --heads origin kaptaan && git checkout kaptaan || git checkout -b kaptaan)",
                         sbShellQuote(cloneURL),
                 )
                 cloneCtx, cloneCancel := context.WithTimeout(ctx, 2*time.Minute)

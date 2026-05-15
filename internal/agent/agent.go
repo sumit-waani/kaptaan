@@ -412,83 +412,116 @@ func (t *turn) appendToolResult(id, output string) {
 // Resumes the sandbox if paused; returns immediately if already started.
 // Result is cached in-memory for the duration of the task.
 func (a *Agent) ensureSandbox(ctx context.Context, projectID int) (tools.Runtime, error) {
-	// Per-project lock prevents parallel tool calls from resuming the sandbox twice.
-	a.sbMu.Lock()
-	if a.sbLocks[projectID] == nil {
-		a.sbLocks[projectID] = &sync.Mutex{}
-	}
-	pLock := a.sbLocks[projectID]
-	a.sbMu.Unlock()
+        // Per-project lock prevents parallel tool calls from resuming the sandbox twice.
+        a.sbMu.Lock()
+        if a.sbLocks[projectID] == nil {
+                a.sbLocks[projectID] = &sync.Mutex{}
+        }
+        pLock := a.sbLocks[projectID]
+        a.sbMu.Unlock()
 
-	pLock.Lock()
-	defer pLock.Unlock()
+        pLock.Lock()
+        defer pLock.Unlock()
 
-	// Return cached in-memory handle if available.
-	a.sbMu.Lock()
-	ps := a.sandboxes[projectID]
-	a.sbMu.Unlock()
-	if ps != nil {
-		return ps.runtime, nil
-	}
+        // Return cached in-memory handle if available.
+        a.sbMu.Lock()
+        ps := a.sandboxes[projectID]
+        a.sbMu.Unlock()
+        if ps != nil {
+                return ps.runtime, nil
+        }
 
-	sandboxID := a.db.GetConfig(ctx, projectID, "_sandbox_id")
-	if sandboxID == "" {
-		return nil, errors.New("no sandbox assigned — open Setup → Projects and click 'Assign Sandbox'")
-	}
-	apiKey := a.db.GetConfig(ctx, 0, "daytona_api_key")
-	if apiKey == "" {
-		return nil, errors.New("daytona_api_key not configured — set it in Setup")
-	}
-	orgID := a.db.GetConfig(ctx, 0, "daytona_org_id")
+        sandboxID := a.db.GetConfig(ctx, projectID, "_sandbox_id")
+        if sandboxID == "" {
+                return nil, errors.New("no sandbox assigned — open Setup → Projects and click 'Assign Sandbox'")
+        }
+        apiKey := a.db.GetConfig(ctx, 0, "daytona_api_key")
+        if apiKey == "" {
+                return nil, errors.New("daytona_api_key not configured — set it in Setup")
+        }
+        orgID := a.db.GetConfig(ctx, 0, "daytona_org_id")
 
-	a.hooks.Send(projectID, "⏳ resuming sandbox…")
-	sb, err := sandbox.Resume(ctx, apiKey, orgID, sandboxID)
-	if err != nil {
-		return nil, fmt.Errorf("sandbox resume: %w", err)
-	}
-	a.hooks.Send(projectID, "✅ sandbox ready")
+        a.hooks.Send(projectID, "⏳ resuming sandbox…")
+        sb, err := sandbox.Resume(ctx, apiKey, orgID, sandboxID)
+        if err != nil {
+                return nil, fmt.Errorf("sandbox resume: %w", err)
+        }
+        a.hooks.Send(projectID, "✅ sandbox ready")
 
-	runtime := &tools.SandboxRuntime{
-		Sandbox: sb,
-		Cwd:     "/home/daytona/workspace",
-		Env: map[string]string{
-			"HOME": "/home/daytona",
-			"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		},
-	}
-	a.sbMu.Lock()
-	a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
-	a.sbMu.Unlock()
-	return runtime, nil
+        runtime := &tools.SandboxRuntime{
+                Sandbox: sb,
+                Cwd:     "/home/daytona/workspace",
+                Env: map[string]string{
+                        "HOME": "/home/daytona",
+                        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                },
+        }
+
+        // If the workspace directory is missing (e.g. initial clone failed or
+        // sandbox was wiped), re-clone the repo before handing the runtime to
+        // the agent. This handles the case where the kaptaan branch did not
+        // exist on the remote at sandbox-assign time.
+        checkRes, checkErr := sb.Run(ctx, "test -d /home/daytona/workspace/.git", "/home/daytona", nil, 10*time.Second)
+        workspaceMissing := checkErr != nil || (checkRes != nil && checkRes.ExitCode != 0)
+        if workspaceMissing {
+                repoURL := normalizeRepoURL(a.db.GetConfig(ctx, projectID, "repo_url"))
+                githubToken := a.db.GetConfig(ctx, projectID, "github_token")
+                if repoURL != "" && githubToken != "" {
+                        a.hooks.Send(projectID, "⚠️ workspace missing — cloning repo…")
+                        cloneURL := injectToken(repoURL, githubToken)
+                        cloneCmd := "cd /home/daytona && rm -rf workspace && git clone " + shellQuote(cloneURL) + " workspace" +
+                                " && cd workspace" +
+                                " && git config user.email kaptaan@local" +
+                                " && git config user.name Kaptaan" +
+                                " && (git ls-remote --exit-code --heads origin kaptaan && git checkout kaptaan || git checkout -b kaptaan)"
+                        cloneCtx, cloneCancel := context.WithTimeout(ctx, 3*time.Minute)
+                        defer cloneCancel()
+                        cloneRes, cloneErr := sb.Run(cloneCtx, cloneCmd, "/home/daytona", nil, 150*time.Second)
+                        if cloneErr != nil {
+                                return nil, fmt.Errorf("workspace re-clone failed: %w", cloneErr)
+                        }
+                        if cloneRes.ExitCode != 0 {
+                                return nil, fmt.Errorf("workspace re-clone failed (exit %d): %s", cloneRes.ExitCode, cloneRes.Stdout+"\n"+cloneRes.Stderr)
+                        }
+                        a.hooks.Send(projectID, "✅ repo cloned, branch: kaptaan")
+                } else {
+                        a.hooks.Send(projectID, "⚠️ workspace missing and no repo configured — starting with empty workspace")
+                }
+        }
+
+        a.sbMu.Lock()
+        a.sandboxes[projectID] = &projectSandbox{runtime: runtime, branch: "kaptaan"}
+        a.sbMu.Unlock()
+        return runtime, nil
 }
 
 // ReleaseSandbox drops the in-memory sandbox handle for a project.
 // Call when the sandbox is deleted so the next task does a fresh resume.
 func (a *Agent) ReleaseSandbox(projectID int) {
-	a.sbMu.Lock()
-	delete(a.sandboxes, projectID)
-	a.sbMu.Unlock()
+        a.sbMu.Lock()
+        delete(a.sandboxes, projectID)
+        a.sbMu.Unlock()
 }
 
 // pauseSandbox clears the in-memory handle and stops the sandbox on Daytona.
 // The stop call is non-blocking (goroutine); Daytona also auto-pauses after inactivity.
 func (a *Agent) pauseSandbox(projectID int) {
-	a.sbMu.Lock()
-	delete(a.sandboxes, projectID)
-	a.sbMu.Unlock()
+        a.sbMu.Lock()
+        delete(a.sandboxes, projectID)
+        a.sbMu.Unlock()
 
-	ctx := context.Background()
-	sandboxID := a.db.GetConfig(ctx, projectID, "_sandbox_id")
-	apiKey := a.db.GetConfig(ctx, 0, "daytona_api_key")
-	orgID := a.db.GetConfig(ctx, 0, "daytona_org_id")
-	if sandboxID == "" || apiKey == "" {
-		return
-	}
-	go func() {
-		if err := sandbox.Stop(ctx, apiKey, orgID, sandboxID); err != nil {
-			log.Printf("[agent] pause sandbox %s: %v", sandboxID, err)
-		}
-	}()
+        ctx := context.Background()
+        sandboxID := a.db.GetConfig(ctx, projectID, "_sandbox_id")
+        apiKey := a.db.GetConfig(ctx, 0, "daytona_api_key")
+        orgID := a.db.GetConfig(ctx, 0, "daytona_org_id")
+        if sandboxID == "" || apiKey == "" {
+                return
+        }
+        go func() {
+                if err := sandbox.Stop(ctx, apiKey, orgID, sandboxID); err != nil {
+                        log.Printf("[agent] pause sandbox %s: %v", sandboxID, err)
+                }
+        }()
 }
 
 // ReadScratchpad reads the scratchpad from the DB.
