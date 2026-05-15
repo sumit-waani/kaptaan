@@ -8,6 +8,7 @@ import (
         "fmt"
         "io"
         "log"
+        "net"
         "net/http"
         "strconv"
         "strings"
@@ -298,8 +299,18 @@ func (p *Pool) streamOnce(ctx context.Context, messages []Message, tools []Tool,
         req.Header.Set("Authorization", "Bearer "+key)
         req.Header.Set("Accept", "text/event-stream")
 
-        // Use a client without a hard read-deadline so the stream can flow freely.
-        streamClient := &http.Client{}
+        // Use a client without a hard body-read deadline so the stream can flow freely,
+        // but enforce timeouts on DNS lookup, TCP dial, and response headers so a
+        // stalled connection does not hang the goroutine indefinitely.
+        streamClient := &http.Client{
+                Transport: &http.Transport{
+                        DialContext: (&net.Dialer{
+                                Timeout:   15 * time.Second,
+                                KeepAlive: 30 * time.Second,
+                        }).DialContext,
+                        ResponseHeaderTimeout: 30 * time.Second,
+                },
+        }
         resp, err := streamClient.Do(req)
         if err != nil {
                 return nil, nil, 0, fmt.Errorf("http: %w", err)

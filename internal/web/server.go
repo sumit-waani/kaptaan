@@ -268,7 +268,12 @@ func (s *Server) Start(ctx context.Context) {
         addrs := []string{"0.0.0.0:80", "0.0.0.0:5000"}
         servers := make([]*http.Server, len(addrs))
         for i, addr := range addrs {
-                srv := &http.Server{Addr: addr, Handler: mux}
+                srv := &http.Server{
+                        Addr:              addr,
+                        Handler:           mux,
+                        ReadHeaderTimeout: 15 * time.Second,
+                        IdleTimeout:       2 * time.Minute,
+                }
                 servers[i] = srv
                 go func(srv *http.Server) {
                         log.Printf("[web] listening on %s", srv.Addr)

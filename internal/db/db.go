@@ -20,7 +20,8 @@ func New(_ context.Context, _ string) (*DB, error) {
         if path == "" {
                 path = "kaptaan.db"
         }
-        sqldb, err := sql.Open("sqlite", path)
+        dsn := path + "?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL"
+        sqldb, err := sql.Open("sqlite", dsn)
         if err != nil {
                 return nil, fmt.Errorf("open sqlite: %w", err)
         }
